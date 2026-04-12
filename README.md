@@ -1,0 +1,1 @@
+- all kernels must use TVM-FFI and take torch tensors as inputs
