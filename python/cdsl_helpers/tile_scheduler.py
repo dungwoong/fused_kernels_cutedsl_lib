@@ -1,6 +1,6 @@
 from typing import Tuple
-from cck.runtime.utils.cute_dsl_utils import ParamsBase, ArgumentsBase
-from cck.runtime.utils.fast_math import FastDivmod
+from .utils.cute_dsl_utils import ParamsBase, ArgumentsBase
+from .utils.fast_math import FastDivmod
 from dataclasses import dataclass
 import math
 
