@@ -85,14 +85,20 @@ def tma_copy(
     src_col: int,
     pipe: cutlass.pipeline.PipelineAsync,
     state: cutlass.pipeline.PipelineState,
+    cta_coord: cute.Coord=0,
+    cta_layout: cute.Layout=None,
+    mcast_mask: any=0,
 ):
+    if cta_layout is None:
+        cta_layout = cute.make_layout((1, 1))
     gT = cute.local_tile(tma_tensor, (tile_m, tile_n), (None, None))
     load, _, _ = tma_get_copy_fn(
         tma_atom,
-        0,
-        cute.make_layout((1, 1)),
+        cta_coord,
+        cta_layout,
         gT,
         s_tensor,
     )
     # return load
-    load(src_row, src_col, state.index, tma_bar_ptr=pipe.producer_get_barrier(state))
+    load(src_row, src_col, state.index, tma_bar_ptr=pipe.producer_get_barrier(state), mcast_mask=mcast_mask)
+
