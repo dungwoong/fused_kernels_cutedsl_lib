@@ -1,0 +1,1 @@
+from .attempt1.gemm import GemmSM90 as RMSNormLinear1SM90
