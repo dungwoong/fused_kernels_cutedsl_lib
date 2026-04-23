@@ -37,9 +37,12 @@ if __name__ == '__main__':
         gemm_n_prologue=1,
     )
     compiled_gemm = compile_cutedsl((a, b, c), gemm, False)
+    compiled_gemm(a, b, c)
     if not IS_NCU:
         print('All close:', torch.allclose(ref, c))
     if IS_DEBUG:
+        print(c)
+        print(ref)
         n_incorrect = c.numel() - ((c - ref).abs() < 0.001).sum()
         print('n_incorrect :', n_incorrect)
         print('n_nonzero :', (c != 0).sum())

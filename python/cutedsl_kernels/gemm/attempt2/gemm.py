@@ -257,9 +257,8 @@ class GemmSM90:
 
                 tile_scheduler.advance_to_next_work()
                 work_tile = tile_scheduler.get_current_work()
-                # next_tile_mnk = (work_tile.tile_idx[0], work_tile.tile_idx[1], work_tile.tile_idx[2])
+                next_tile_mnk = (work_tile.tile_idx[0], work_tile.tile_idx[1], work_tile.tile_idx[2])
                 # Dispatch next GEMMs
-                ...
 
                 # Epilogue ##################################################
                 self.epilogue(tiled_mma, epi_mC, epi_copy, sD, accumulators, tile_coord_mnk, tidx, warp_idx)
@@ -410,7 +409,7 @@ class GemmSM90:
             accumulate_O = True
             read_state.advance()
         
-        for _ in cutlass.range(start_iter + num_prologue_mma, end_iter):
+        for _ in cutlass.range(start_iter + num_prologue_mma, end_iter, unroll=1):
             pipe.consumer_wait(read_state, pipe.consumer_try_wait(read_state))
             mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators, read_state, read_state, accumulate_O, -1)
             accumulate_O = True
@@ -426,45 +425,45 @@ class GemmSM90:
         return read_state, tiled_mma 
         
 
-    # @cute.jit
-    # def consume_mainloop(self, k_iters: Int32, tiled_mma: cute.TiledMma, accumulators: cute.Tensor, pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState, tCrA: cute.Tensor, tCrB: cute.Tensor, tidx: Int32, sA: cute.Tensor, sB: cute.Tensor):
-    #     release_state = read_state.clone() # NOTE: read is where we are reading from, release is when we are finished with the tile
-    #     num_prologue_mma = min(self.gemm_n_prologue, k_iters)
-    #     num_k_blocks = cute.size(tCrA, mode=[2])
-    #     tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, False)
+    @cute.jit
+    def consume_mainloop(self, k_iters: Int32, tiled_mma: cute.TiledMma, accumulators: cute.Tensor, pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState, tCrA: cute.Tensor, tCrB: cute.Tensor, tidx: Int32, sA: cute.Tensor, sB: cute.Tensor):
+        release_state = read_state.clone() # NOTE: read is where we are reading from, release is when we are finished with the tile
+        num_prologue_mma = min(self.gemm_n_prologue, k_iters)
+        num_k_blocks = cute.size(tCrA, mode=[2])
+        tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, False)
 
-    #     peek_ab_full_status = Boolean(True)
-    #     if 0 < k_iters:
-    #         peek_ab_full_status = pipe.consumer_try_wait(read_state)
+        peek_ab_full_status = Boolean(True)
+        if 0 < k_iters:
+            peek_ab_full_status = pipe.consumer_try_wait(read_state)
         
-    #     accumulate_O = False
-    #     for k_tile in cutlass.range(num_prologue_mma):
-    #         pipe.consumer_wait(read_state, peek_ab_full_status)
-    #         mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators, read_state, read_state, accumulate_O, -1)
-    #         accumulate_O = True
-    #         read_state.advance()
-    #         peek_ab_full_status = Boolean(True)
-    #         if k_tile + 1 < k_iters:
-    #             peek_ab_full_status = pipe.consumer_try_wait(read_state)
+        accumulate_O = False
+        for k_tile in cutlass.range(num_prologue_mma):
+            pipe.consumer_wait(read_state, peek_ab_full_status)
+            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators, read_state, read_state, accumulate_O, -1)
+            accumulate_O = True
+            read_state.advance()
+            peek_ab_full_status = Boolean(True)
+            if k_tile + 1 < k_iters:
+                peek_ab_full_status = pipe.consumer_try_wait(read_state)
 
-    #     for k_tile in cutlass.range(num_prologue_mma, k_iters, unroll=1, unroll_full=False):
-    #         pipe.consumer_wait(read_state, peek_ab_full_status)
-    #         mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators, read_state, read_state, accumulate_O, -1)
-    #         accumulate_O = True
-    #         cute.nvgpu.warpgroup.wait_group(self.gemm_n_prologue)
-    #         pipe.consumer_release(release_state)
-    #         read_state.advance()
-    #         release_state.advance()
+        for k_tile in cutlass.range(num_prologue_mma, k_iters, unroll=1, unroll_full=False):
+            pipe.consumer_wait(read_state, peek_ab_full_status)
+            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators, read_state, read_state, accumulate_O, -1)
+            accumulate_O = True
+            cute.nvgpu.warpgroup.wait_group(self.gemm_n_prologue)
+            pipe.consumer_release(release_state)
+            read_state.advance()
+            release_state.advance()
 
-    #         peek_ab_full_status = Boolean(True)
-    #         if k_tile + 1 < k_iters:
-    #             peek_ab_full_status = pipe.consumer_try_wait(read_state)
+            peek_ab_full_status = Boolean(True)
+            if k_tile + 1 < k_iters:
+                peek_ab_full_status = pipe.consumer_try_wait(read_state)
         
-    #     cute.nvgpu.warpgroup.wait_group(0)
-    #     for k_tile in cutlass.range(num_prologue_mma, unroll=1):
-    #         pipe.consumer_release(release_state)
-    #         release_state.advance()
-    #     return read_state, tiled_mma
+        cute.nvgpu.warpgroup.wait_group(0)
+        for k_tile in cutlass.range(num_prologue_mma, unroll=1):
+            pipe.consumer_release(release_state)
+            release_state.advance()
+        return read_state, tiled_mma
 
     # More runtime stuff
     # -----------------------------
