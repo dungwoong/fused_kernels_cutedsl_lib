@@ -3,3 +3,10 @@
 - After mathing out the stmatrix, I found when we populate mma we do 64x(cta_tile_n), giving that mma size to EACH mma, which is not what we want.
 - so when make trivial tiled mma, do `tiler_mn=(64, self.cta_tile_shape_mnk[1] // self.atom_layout_mnk[1])`
 - fixed!
+
+# Try to dispatch next MMAs before doing epilogue
+
+- the producer will keep producing
+- the consumer will finish mainloop, then advance worktile, then dispatch next MMAs, and then do the epilogue, and then yeah
+
+- first step: I want a utility function that can run gemm mainloop. Make sure no performance degradation. THEN, move onto using this for transition GEMM
