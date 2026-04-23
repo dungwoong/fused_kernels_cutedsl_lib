@@ -1,6 +1,6 @@
 import torch
 from triton.testing import do_bench
-from cutedsl_kernels import Gemm2SM90
+from cutedsl_kernels import Gemm3SM90
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 
 if __name__ == '__main__':
@@ -27,14 +27,15 @@ if __name__ == '__main__':
     c = torch.empty((m, n), dtype=torch.bfloat16).to('cuda')
     ref = a @ b.t()
 
-    gemm = Gemm2SM90(
+    gemm = Gemm3SM90(
         tile_shape_mn=(128, 256),
         epi_tile_mn=(128, 32),
         cluster_shape_mnk=(2, 1, 1),
         atom_layout_mn=(2, 1),
         ab_stage=3,
+        epi_stage=2,
         is_persistent=True,
-        gemm_n_prologue=1,
+        gemm_n_transition=0,
     )
     compiled_gemm = compile_cutedsl((a, b, c), gemm, False)
     compiled_gemm(a, b, c)
