@@ -261,7 +261,7 @@ class GemmSM90:
                 cute.select(self.cta_tile_shape_mnk, mode=[0, 1])
             )
             accumulators = cute.make_rmem_tensor(acc_shape, self.acc_dtype)
-            print('accumulators :', accumulators)
+            # print('accumulators :', accumulators)
 
             # S2R load
             copy_atom_A = cute.make_copy_atom(
