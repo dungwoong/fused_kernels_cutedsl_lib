@@ -1,3 +1,5 @@
+In the future, I can use the same folder but make different classes for each kernel attempt. I think work is stable enough that I won't drastically change dependent files.
+
 # Try to dispatch next MMAs before doing epilogue
 
 - the producer will keep producing
