@@ -28,11 +28,11 @@ if __name__ == '__main__':
     ref = a @ b.t()
 
     gemm = Gemm4SM90(
-        tile_shape_mn=(128, 256),
+        tile_shape_mnk=(128, 256, 32),
         epi_tile_mn=(128, 128),
         cluster_shape_mnk=(2, 1, 1),
         atom_layout_mn=(2, 1),
-        ab_stage=3,
+        ab_stage=6,
         epi_stage=2,
         is_persistent=True,
         gemm_n_prologue=1,

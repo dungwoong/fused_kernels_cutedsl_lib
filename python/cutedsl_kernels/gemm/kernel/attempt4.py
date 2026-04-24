@@ -47,7 +47,8 @@ def printwg(x):
 
 class GemmSM90:
     """
-    After stmatrix is done, dispatch next WGMMAs before doing the TMA store. Larger epi tile required.
+    - After stmatrix is done, dispatch next WGMMAs before doing the TMA store. Larger epi tile required.
+    - Also, we allow users to pass in a k dimension now. Seems like PyTorch kernels use 32 for higher tensor core usage around the epilogue.
 
     If we use m128n256k64 tile size + 3 stages, we can fit 128x128x2 epilogue while staying under 228kB
 
@@ -55,7 +56,7 @@ class GemmSM90:
     """
     def __init__(
         self,
-        tile_shape_mn: Tuple[int, int],
+        tile_shape_mnk: Tuple[int, int, int],
         epi_tile_mn: Tuple[int, int],
         cluster_shape_mnk: Tuple[int, int, int],
         atom_layout_mn: Tuple[int, int],
@@ -65,13 +66,14 @@ class GemmSM90:
         is_persistent: bool = False,
         gemm_n_prologue: int = 0,
         ):
+        assert tile_shape_mnk[2] % 16 == 0, 'Tile shape k must be divisible by 16'
         reuse_ab = False # Removed
         self.acc_dtype = cutlass.Float32
         self.raster_order = raster_order
         self.scheduler_group_size = Int32(8)
         self.cluster_shape_mnk = cluster_shape_mnk
         self.cluster_layout_mnk = None
-        self.cta_tile_shape_mnk = (*tile_shape_mn, -1) # K-dim decided later
+        self.cta_tile_shape_mnk = tile_shape_mnk
         tile_M, tile_N = self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1]
 
         # Atom layout
@@ -526,9 +528,8 @@ class GemmSM90:
             self.atom_layout_mnk,
             tiler_mn=(64, self.cta_tile_shape_mnk[1] // self.atom_layout_mnk[1])
         )
-        mma_k = 16
-        mma_inst_tile_k = 4
-        self.cta_tile_shape_mnk = (self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1], mma_k * mma_inst_tile_k)
+        # mma_k = 16
+        # self.cta_tile_shape_mnk = (self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1], mma_k * self.mma_inst_tile_k)
     
     def populate_smem_layouts(self):
         self.a_smem_layout_staged = sm90_utils.make_smem_layout_a(
