@@ -47,7 +47,11 @@ def printwg(x):
 
 class GemmSM90:
     """
-    Changed Gemm to use start loop, middle loop and end release instead of one large consumer loop
+    After stmatrix is done, dispatch next WGMMAs before doing the TMA store. Larger epi tile required.
+
+    If we use m128n256k64 tile size + 3 stages, we can fit 128x128x2 epilogue while staying under 228kB
+
+    PRECONDITION: n_prologue must be valid given the shapes of the inputs
     """
     def __init__(
         self,
@@ -60,7 +64,6 @@ class GemmSM90:
         raster_order: RasterOrder = RasterOrder.AlongN,
         is_persistent: bool = False,
         gemm_n_prologue: int = 0,
-        gemm_n_transition: int = 0,
         ):
         reuse_ab = False # Removed
         self.acc_dtype = cutlass.Float32
@@ -120,7 +123,6 @@ class GemmSM90:
         self.max_active_clusters = get_max_active_clusters(math.prod(cluster_shape_mnk))
 
         self.gemm_n_prologue = gemm_n_prologue
-        self.gemm_n_transition = gemm_n_transition
 
         # Checks
         assert not (self.reuse_ab and self.is_persistent), "Persistent kernel can't reuse AB for epilogue"
@@ -244,33 +246,39 @@ class GemmSM90:
             work_tile = tile_scheduler.initial_work_tile_info()
             # Dispatch prologue GEMMs
 
+            accumulate_O = False
+            ab_release_state = ab_consumer_state.clone()
+
+            if cutlass.const_expr(self.gemm_n_prologue > 0):
+                ab_consumer_state, tiled_mma, accumulate_O = self.gemm_start_loop(tidx, self.gemm_n_prologue, tiled_mma, accumulators, ab_pipeline, ab_consumer_state, sA, sB, accumulate_O)
+
             while work_tile.is_valid_tile:
                 tile_coord_mnk = (work_tile.tile_idx[0], work_tile.tile_idx[1], work_tile.tile_idx[2])
                 gA_mk = cute.local_tile(mA, cute.select(self.cta_tile_shape_mnk, [0, 2]), (tile_coord_mnk[0], None))
                 k_iters = cute.size(gA_mk, mode=[2]) # m, k, restK
 
-                # ab_consumer_state, tiled_mma = self.consume_mainloop(k_iters, tiled_mma, accumulators, ab_pipeline, ab_consumer_state, tCrA, tCrB, tidx, sA, sB)
-                n_prologue = min(self.gemm_n_prologue, k_iters)
-                accumulate_O = False
-                ab_release_state = ab_consumer_state.clone()
-                if cutlass.const_expr(n_prologue > 0):
-                    ab_consumer_state, tiled_mma, accumulate_O = self.gemm_start_loop(tidx, n_prologue, tiled_mma, accumulators, ab_pipeline, ab_consumer_state, sA, sB, accumulate_O)
-                # ab_consumer_state, tiled_mma = self.gemm_loop(tidx, self.gemm_n_prologue, 0, k_iters, tiled_mma, accumulators, ab_pipeline, ab_consumer_state, sA, sB)
                 ab_consumer_state, ab_release_state, accumulate_O, tiled_mma = self.gemm_middle_loop(
-                    tidx, n_prologue, k_iters, tiled_mma, 
+                    tidx, self.gemm_n_prologue, k_iters, tiled_mma, 
                     accumulators, ab_pipeline, 
                     ab_consumer_state, ab_release_state, 
-                    sA, sB, accumulate_O, wait_num=n_prologue)
-                if cutlass.const_expr(n_prologue > 0):
-                    ab_release_state = self.gemm_end_release(n_prologue, ab_pipeline, ab_release_state)
-
-                tile_scheduler.advance_to_next_work()
-                work_tile = tile_scheduler.get_current_work()
-                next_tile_mnk = (work_tile.tile_idx[0], work_tile.tile_idx[1], work_tile.tile_idx[2])
-                # Dispatch next GEMMs
+                    sA, sB, accumulate_O, wait_num=self.gemm_n_prologue)
+                if cutlass.const_expr(self.gemm_n_prologue > 0):
+                    ab_release_state = self.gemm_end_release(self.gemm_n_prologue, ab_pipeline, ab_release_state)
 
                 # Epilogue ##################################################
                 self.epilogue(tiled_mma, epi_mC, epi_copy, sD, accumulators, tile_coord_mnk, tidx, warp_idx)
+
+                # Dispatch next GEMMs, the last TMA store should be in flight so we can reuse accumulators
+                accumulate_O = False
+                tile_scheduler.advance_to_next_work()
+                work_tile = tile_scheduler.get_current_work()
+                if cutlass.const_expr(self.gemm_n_prologue > 0):
+                    if work_tile.is_valid_tile:
+                        ab_consumer_state, tiled_mma, accumulate_O = self.gemm_start_loop(tidx, self.gemm_n_prologue, tiled_mma, accumulators, ab_pipeline, ab_consumer_state, sA, sB, accumulate_O)
+
+
+                if warp_idx == 0:
+                    cute.arch.cp_async_bulk_wait_group(0, read=True)
 
                 # tile_scheduler.advance_to_next_work()
                 # work_tile = tile_scheduler.get_current_work()
@@ -368,12 +376,11 @@ class GemmSM90:
                     bSG_sD[(None, epi_buffer)],
                     bSG_gD[(None, gmem_coord)],
                 )
-                c_pipeline.producer_commit() # commit_group
-                c_pipeline.producer_acquire() # wait_group(stages-1)
+                cute.arch.cp_async_bulk_commit_group()
+                cute.arch.cp_async_bulk_wait_group(self.epi_stage - 1, read=True)
+                # c_pipeline.producer_commit() # commit_group
+                # c_pipeline.producer_acquire() # wait_group(stages-1)
             epilogue_barrier.arrive_and_wait() # Don't start next stmatrix yet
-        
-        if warp_idx == 0:
-            c_pipeline.producer_tail() # wait_group(0)
 
     @cute.jit
     def produce_mainloop(
