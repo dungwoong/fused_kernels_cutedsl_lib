@@ -20,6 +20,7 @@ if consumer:
 ```
 
 - In the `tile_scheduler` you have to pass in something like `tile_coord_mnkl = (head, head, None, head)` so you're using runtime values. This is because MLIR will extract runtime vs compile time values so this is just a bit of a hack to use their tile coord.
+- be aware of what needs to be transposed since CuteDSL kernels compute AB.t() so e.g. X @ WQ, you must do WQ.t(). Check `dec_attn_run.py` for more details.
 
 # More stuff
 

@@ -46,32 +46,74 @@ def get_tma_tensor_and_atom(tG, shared_layout, rows, cols):
     )
 
 
+# TODO make sure the update works on everything
+# def tma_get_copy_fn(
+#     atom: cute.CopyAtom,
+#     cta_coord: cute.Coord,
+#     cta_layout: cute.Layout,
+#     src_tensor: cute.Tensor,
+#     dst_tensor: cute.Tensor,
+#     single_stage: bool=False,
+#     **kwargs,
+# ):
+#     """Returns a callable to perform the G2S copy"""
+#     src_is_smem = cutlass.const_expr(isinstance(src_tensor.iterator, cute.Pointer) and src_tensor.memspace == cute.AddressSpace.smem)
+#     smem_tensor, gmem_tensor = (src_tensor, dst_tensor) if src_is_smem else (dst_tensor, src_tensor)
+
+#     s, g = cute.nvgpu.cpasync.tma_partition(
+#         atom,
+#         cta_coord,
+#         cta_layout,
+#         cute.group_modes(smem_tensor, 0, cute.rank(smem_tensor) - 1),
+#         cute.group_modes(gmem_tensor, 0, cute.rank(gmem_tensor) - 2),
+#     )
+#     src, dst = (s, g) if src_is_smem else (g, s)
+
+#     # TODO might need to fix
+#     def copy_tma(src_row, src_col, dst_idx, **kwargs2):
+#         cute.copy(atom, src[None, src_row, src_col], dst[None, dst_idx], **kwargs2, **kwargs)
+
+#     return copy_tma, s, g
+
+
 def tma_get_copy_fn(
     atom: cute.CopyAtom,
     cta_coord: cute.Coord,
     cta_layout: cute.Layout,
     src_tensor: cute.Tensor,
     dst_tensor: cute.Tensor,
+    single_stage: bool=False,
     **kwargs,
 ):
     """Returns a callable to perform the G2S copy"""
-    src_is_smem = cutlass.const_expr(isinstance(src_tensor.iterator, cute.Pointer) and src_tensor.memspace == cute.AddressSpace.smem)
+    src_is_smem = cutlass.const_expr(
+        isinstance(src_tensor.iterator, cute.Pointer)
+        and src_tensor.memspace == cute.AddressSpace.smem
+    )
     smem_tensor, gmem_tensor = (src_tensor, dst_tensor) if src_is_smem else (dst_tensor, src_tensor)
 
     s, g = cute.nvgpu.cpasync.tma_partition(
         atom,
         cta_coord,
         cta_layout,
-        cute.group_modes(smem_tensor, 0, cute.rank(smem_tensor) - 1),
-        cute.group_modes(gmem_tensor, 0, cute.rank(gmem_tensor) - 2),
+        cute.group_modes(smem_tensor, 0, cute.rank(smem_tensor) - (1 if not single_stage else 0)),
+        cute.group_modes(gmem_tensor, 0, cute.rank(gmem_tensor) - (2 if not single_stage else 0)),
     )
     src, dst = (s, g) if src_is_smem else (g, s)
 
-    # TODO might need to fix
     def copy_tma(src_row, src_col, dst_idx, **kwargs2):
         cute.copy(atom, src[None, src_row, src_col], dst[None, dst_idx], **kwargs2, **kwargs)
-
-    return copy_tma, s, g
+    
+    def copy_tma_single_stage(**kwargs2):
+        cute.copy(atom, src, dst, **kwargs, **kwargs2)
+    
+    def store_tma(src_idx, dst_row, dst_col, **kwargs2):
+        cute.copy(atom, src[src_idx], dst[None, dst_row, dst_col], **kwargs2, **kwargs)
+    
+    def store_tma_single_stage(**kwargs2):
+        cute.copy(atom, src, dst, **kwargs, **kwargs2)
+    
+    return (copy_tma if not single_stage else copy_tma_single_stage) if not src_is_smem else (store_tma if not single_stage else store_tma_single_stage), s, g
 
 
 # @cute.jit

@@ -76,7 +76,7 @@ class HeadAttnTileScheduler:
     @staticmethod
     def get_grid_shape(params: Params, max_sms: Int32, *, loc=None, ip=None) -> Tuple[Int32, Int32, Int32]:
         if const_expr(not params.is_persistent):
-            return (math.prod(params.n_heads), 1, 1)
+            return (params.n_heads, 1, 1)
         else:
             return (max_sms, 1, 1)
 

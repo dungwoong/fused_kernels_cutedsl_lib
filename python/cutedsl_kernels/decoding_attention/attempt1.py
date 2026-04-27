@@ -6,6 +6,17 @@ from cutlass import cute, pipeline
 from cdsl_helpers import shared, mma, pipeline as my_pipeline, layout as my_layout, store as my_store
 from . import attn_scheduler
 
+@cute.jit
+def print0(x):
+    tidx, _, _ = cute.arch.thread_idx()
+    bidx, bidy, bidz = cute.arch.block_idx()
+    if cutlass.const_expr(isinstance(x, cute.TensorSSA)):
+        if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
+            cute.print_tensor(x)
+    else:
+        if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
+            cute.printf(x)
+
 class NamedBarrierFwd(enum.IntEnum):
     Epilogue = enum.auto()
 
@@ -108,11 +119,12 @@ class Kernel:
         mKcache_s_atom, mKcache_s_tensor = get_epi_tensor_atom(mKcache, sK_layout, (self.m1, self.n1))
         mVcache_s_atom, mVcache_s_tensor = get_epi_tensor_atom(mVcache, sV_layout, (self.m1, self.n1))
         # normally we pass in output matrix but mX works here
-        nheads = mKcache.shape[0]
+        nheads = mKcache.shape[2]
         scheduler_params = attn_scheduler.HeadAttnTileScheduler.to_underlying_arguments(
             attn_scheduler.HeadAttnTileSchedulerArguments.create(nheads, self.is_persistent)
         )
         grid = attn_scheduler.HeadAttnTileScheduler.get_grid_shape(scheduler_params, 132)
+        print(grid)
         self.kernel(
             scheduler_params, sX_layout, sWq_layout, sWk_layout, sWv_layout, 
             sK_layout, sV_layout,
@@ -226,6 +238,7 @@ class Kernel:
             mma.accumulating_gemm_ss(tidx, tiled_gemm, sWq, sX, acc_q, state, state, accumulate_stg1, -1)
             mma.accumulating_gemm_ss(tidx, tiled_gemm, sWk, sX, acc_k, state, state, accumulate_stg1, -1)
             mma.accumulating_gemm_ss(tidx, tiled_gemm, sWv, sX, acc_v, state, state, accumulate_stg1, -1)
+            accumulate_stg1 = True
             cute.nvgpu.warpgroup.wait_group(0)
             pipe.consumer_release(state)
             state.advance()
@@ -246,7 +259,7 @@ class Kernel:
             cute.arch.barrier(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * 32)
             kCache_slice = mKc_s[None, None, head_idx]
             vCache_slice = mVc_s[None, None, head_idx]
-            num_chunks = cute.size(mKc_s, mode=[2]) // self.m1
+            num_chunks = cute.size(mKc_s, mode=[0]) // self.m1 # (seqlen, dim, heads)
             _tma_store_single(sK[None, None, 0], kCache_slice, self.m1, self.n1, num_chunks - 1, 0, mKc_s_atom)
             _tma_store_single(sV[None, None, 0], vCache_slice, self.m1, self.n1, num_chunks - 1, 0, mVc_s_atom)
             cute.arch.cp_async_bulk_commit_group()
