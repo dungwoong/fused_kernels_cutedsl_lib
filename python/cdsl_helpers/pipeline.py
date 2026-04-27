@@ -4,7 +4,7 @@ from cutlass import cute, pipeline
 @cute.jit
 def make_tma_pipeline(
     mbar_ptr: cute.Pointer, num_stages: int, num_bytes: int, cta_layout_vmnk: cute.Layout, mcast_size: int, num_consumer_warps: int
-):
+) -> pipeline.PipelineAsync:
     num_producers = 1
     num_consumers = num_consumer_warps * mcast_size  # IMPORTANT!!!
 

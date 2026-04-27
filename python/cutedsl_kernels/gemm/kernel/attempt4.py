@@ -281,10 +281,6 @@ class GemmSM90:
 
                 if warp_idx == 0:
                     cute.arch.cp_async_bulk_wait_group(0, read=True)
-
-                # tile_scheduler.advance_to_next_work()
-                # work_tile = tile_scheduler.get_current_work()
-
         return
 
     # Main stuff
@@ -341,15 +337,6 @@ class GemmSM90:
             epi_tile_shape, stride=(epi_tile_shape[1], 1)
         )
 
-        # this sets up a bulk wait pipeline(wait_group and commit_group)
-        c_producer_group = pipeline.CooperativeGroup(
-            pipeline.Agent.Thread, self.threads_per_cta
-        )
-        c_pipeline = pipeline.PipelineTmaStore.create(
-            num_stages=self.epi_stage,
-            producer_group=c_producer_group,
-        )
-
         for epi_idx in cutlass.range_constexpr(epi_tile_num):
             for epi_v in cutlass.range_constexpr(size_tRS_rD):
                 # Take a slice of the accumulators
@@ -380,8 +367,6 @@ class GemmSM90:
                 )
                 cute.arch.cp_async_bulk_commit_group()
                 cute.arch.cp_async_bulk_wait_group(self.epi_stage - 1, read=True)
-                # c_pipeline.producer_commit() # commit_group
-                # c_pipeline.producer_acquire() # wait_group(stages-1)
             epilogue_barrier.arrive_and_wait() # Don't start next stmatrix yet
 
     @cute.jit
