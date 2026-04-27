@@ -32,6 +32,6 @@ if __name__ == '__main__':
     V_cache = torch.randn((H, P, D), dtype=dtype).mul(std).to('cuda')
 
     attn = DAttn1((16, 128, 64), 2, True)
-    tensors = (X, WQ, WK, WV)
+    tensors = (X, WQ, WK, WV, K_cache)
     compiled_attn = compile_cutedsl(tensors, attn, False)
     compiled_attn(*tensors)

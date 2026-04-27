@@ -31,10 +31,10 @@ class HeadAttnTileSchedulerArguments(ArgumentsBase):
 
     @staticmethod
     @cute.jit
-    def create(t: cute.Tensor, is_persistent: bool):
+    def create(nheads: cutlass.Int32, is_persistent: bool):
         # last dim of t is the heads dim
-        assert cute.rank(t) == 3, "need 3d tensor, last dim is head"
-        nheads = cute.size(t, mode=[2])
+        # assert cute.rank(t) == 3, "need 3d tensor, last dim is head"
+        # nheads = cute.size(t, mode=[2])
         return HeadAttnTileSchedulerArguments(nheads, is_persistent)
 
 

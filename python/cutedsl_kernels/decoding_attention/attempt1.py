@@ -36,7 +36,16 @@ class Kernel:
     # s means shared tensor e.g. sX
 
     @cute.jit
-    def __call__(self, mX: cute.Tensor, mWq: cute.Tensor, mWk: cute.Tensor, mWv: cute.Tensor):
+    def __call__(self, mX: cute.Tensor, mWq: cute.Tensor, mWk: cute.Tensor, mWv: cute.Tensor, mKcache: cute.Tensor):
+        """
+        e.g. 
+        32 heads, dim=128 --> model dim = 4096
+        mX = (16, 4096)
+        mWq, k, v = (4096, 4096) (need to multiply by columns corresponding to heads)
+
+        mKcache, mVcache = (32, 1024, 128)
+        """
+        print(mKcache)
         sX_layout = shared.get_smem_layout_row_major(self.dtype, self.m1, self.k1, self.stg1_stages)
         sWq_layout = shared.get_smem_layout_row_major(self.dtype, self.n1, self.k1, self.stg1_stages)
         sWk_layout = shared.get_smem_layout_row_major(self.dtype, self.n1, self.k1, self.stg1_stages)
@@ -54,11 +63,17 @@ class Kernel:
         mWv_g2s_atom, mWv_g2s_tensor = shared.get_tma_tensor_and_atom(mWv, sWv_layout, self.n1, self.k1)
 
         # normally we pass in output matrix but mX works here
+        nheads = mKcache.shape[0]
         scheduler_params = attn_scheduler.HeadAttnTileScheduler.to_underlying_arguments(
-            attn_scheduler.HeadAttnTileSchedulerArguments.create(mX, self.is_persistent)
+            attn_scheduler.HeadAttnTileSchedulerArguments.create(nheads, self.is_persistent)
         )
         grid = attn_scheduler.HeadAttnTileScheduler.get_grid_shape(scheduler_params, 132)
-        ... # run kernel
+        self.kernel(
+            scheduler_params, sX_layout, sWq_layout, sWk_layout, sWv_layout, 
+            mX_g2s_atom, mX_g2s_tensor, 
+            mWq_g2s_atom, mWq_g2s_tensor, 
+            mWk_g2s_atom, mWk_g2s_tensor, 
+            mWv_g2s_atom, mWv_g2s_tensor).launch(grid=grid, block=[(self.nconsumer_warps + 4) * cute.arch.WARP_SIZE])
 
     @cute.kernel
     def kernel(
@@ -93,8 +108,10 @@ class Kernel:
         stg1_pipe = my_pipeline.make_tma_pipeline(
             smem_bars1.pipe_ptr.data_ptr(),
             self.stg1_stages,
-            self.nconsumer_warps,
-            num_bytes=x_bytes + q_bytes + k_bytes + v_bytes
+            num_consumer_warps=self.nconsumer_warps,
+            num_bytes=x_bytes + q_bytes + k_bytes + v_bytes,
+            mcast_size=1,
+            cta_layout_vmnk=None
         )
 
         scheduler = attn_scheduler.HeadAttnTileScheduler.create(scheduler_params)
@@ -116,16 +133,12 @@ class Kernel:
             while work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx
                 head_idx = tile_coord[0]
-                mX_curr = mX[None, None, head_idx]
-                mWq_curr = mWq[None, None, head_idx]
-                mWk_curr = mWk[None, None, head_idx]
-                mWv_curr = mWv[None, None, head_idx]
                 s1_pstate = self.producer_stg1(
-                    stg1_pipe, s1_pstate, k_iters, 
-                    mX_atom, mX_curr, sX, 
-                    mWq_atom, mWq_curr, sWq, 
-                    mWk_atom, mWk_curr, sWk, 
-                    mWv_atom, mWv_curr, sWv)
+                    stg1_pipe, s1_pstate, k_iters, head_idx,
+                    mX_atom, mX, sX, 
+                    mWq_atom, mWq, sWq, 
+                    mWk_atom, mWk, sWk, 
+                    mWv_atom, mWv, sWv)
             
             stg1_pipe.producer_tail(s1_pstate)
     
@@ -138,16 +151,16 @@ class Kernel:
         return state
 
     @cute.jit
-    def producer_stg1(self, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, k_iters: cutlass.Int32, tmaa_X, mX, sX, tmaa_Wq, mWq, sWq, tmaa_Wk, mWk, sWk, tmaa_Wv, mWv, sWv):
+    def producer_stg1(self, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, k_iters: cutlass.Int32, head_idx: cutlass.Int32, tmaa_X, mX, sX, tmaa_Wq, mWq, sWq, tmaa_Wk, mWk, sWk, tmaa_Wv, mWv, sWv):
         """
         X, wQKV should be sliced to remove head dim
         """
         for k in cutlass.range(k_iters, unroll=1):
             pipe.producer_acquire(state, pipe.producer_try_acquire(state))
             shared.tma_copy(tmaa_X, mX, sX, self.m1, self.k1, 0, k, pipe, state)
-            shared.tma_copy(tmaa_Wq, mWq, sWq, self.n1, self.k1, 0, k, pipe, state)
-            shared.tma_copy(tmaa_Wk, mWk, sWk, self.n1, self.k1, 0, k, pipe, state)
-            shared.tma_copy(tmaa_Wv, mWv, sWv, self.n1, self.k1, 0, k, pipe, state)
+            shared.tma_copy(tmaa_Wq, mWq, sWq, self.n1, self.k1, head_idx, k, pipe, state)
+            shared.tma_copy(tmaa_Wk, mWk, sWk, self.n1, self.k1, head_idx, k, pipe, state)
+            shared.tma_copy(tmaa_Wv, mWv, sWv, self.n1, self.k1, head_idx, k, pipe, state)
             state.advance()
         return state
     
