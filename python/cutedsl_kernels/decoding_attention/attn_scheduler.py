@@ -89,7 +89,8 @@ class HeadAttnTileScheduler:
     def get_current_work(self, *, loc=None, ip=None):
         params = self.params
         head = self._map_cta_coords(self._current_work_idx)
-        tile_coord_mnkl = (head, 0, 0, 0)
+        tile_coord_mnkl = (head, head, None, head) # if you put 0 here it gets optimized out for compile-time, and you get problems with dimension of tile coord
+        is_valid = False
         if const_expr(not params.is_persistent):
             is_valid = self._num_tiles_executed == 0
         else:

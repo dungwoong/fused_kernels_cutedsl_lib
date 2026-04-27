@@ -19,6 +19,8 @@ if consumer:
         ...
 ```
 
+- In the `tile_scheduler` you have to pass in something like `tile_coord_mnkl = (head, head, None, head)` so you're using runtime values. This is because MLIR will extract runtime vs compile time values so this is just a bit of a hack to use their tile coord.
+
 # More stuff
 
 I THINK in triton you have to specifically pass in a descriptor to use TMA and you have to call warp specialize to warp specialize so the Trinity kernel has neither of these.

@@ -35,3 +35,4 @@ if __name__ == '__main__':
     tensors = (X, WQ, WK, WV, K_cache, V_cache)
     compiled_attn = compile_cutedsl(tensors, attn, False)
     compiled_attn(*tensors)
+    torch.cuda.synchronize()

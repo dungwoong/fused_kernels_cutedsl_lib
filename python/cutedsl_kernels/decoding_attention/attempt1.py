@@ -162,31 +162,39 @@ class Kernel:
         if (warp_idx < self.nconsumer_warps): # Consumer
             cute.arch.setmaxregister_increase(self.consumer_regs)
             s1_cstate = pipeline.make_pipeline_state(pipeline.PipelineUserType.Consumer, self.stg1_stages)
-            work_tile = scheduler.initial_work_tile_info()
             acc_q = mma.get_acc(tiled_gemm_1, self.n1, self.m1, self.acc_dtype)
             acc_k = mma.get_acc(tiled_gemm_1, self.n1, self.m1, self.acc_dtype)
             acc_v = mma.get_acc(tiled_gemm_1, self.n1, self.m1, self.acc_dtype)
-            while work_tile.is_valid_tile:
+            work_tile = scheduler.initial_work_tile_info()
+            if work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx
+                head_idx = tile_coord[0]
                 s1_cstate, tiled_gemm_1 = self.consumer_stg1(
                     stg1_pipe, s1_cstate, k_iters, head_idx, tiled_gemm_1, tidx, sX, sWq, sWk, sWv, acc_q, acc_k, acc_v, sK, sV, mVc_s_atom, mVc_s, mKc_s_atom, mKc_s
                 )
+                scheduler.fetch_next_work()
+                scheduler.advance_to_next_work()
+                work_tile = scheduler.get_current_work()
         if (warp_idx >= self.nconsumer_warps): # Producer
             cute.arch.setmaxregister_decrease(self.producer_regs)
-            s1_pstate = pipeline.make_pipeline_state(pipeline.PipelineUserType.Producer, self.stg1_stages)
-            work_tile = scheduler.initial_work_tile_info()
-            
-            while work_tile.is_valid_tile:
-                tile_coord = work_tile.tile_idx
-                head_idx = tile_coord[0]
-                s1_pstate = self.producer_stg1(
-                    stg1_pipe, s1_pstate, k_iters, head_idx,
-                    mX_atom, mX, sX, 
-                    mWq_atom, mWq, sWq, 
-                    mWk_atom, mWk, sWk, 
-                    mWv_atom, mWv, sWv)
-            
-            stg1_pipe.producer_tail(s1_pstate)
+            if (warp_idx == self.nconsumer_warps):
+                s1_pstate = pipeline.make_pipeline_state(pipeline.PipelineUserType.Producer, self.stg1_stages)
+                work_tile = scheduler.initial_work_tile_info()
+                
+                if work_tile.is_valid_tile:
+                    tile_coord = work_tile.tile_idx
+                    head_idx = tile_coord[0]
+                    s1_pstate = self.producer_stg1(
+                        stg1_pipe, s1_pstate, k_iters, head_idx,
+                        mX_atom, mX, sX, 
+                        mWq_atom, mWq, sWq, 
+                        mWk_atom, mWk, sWk, 
+                        mWv_atom, mWv, sWv)
+                    scheduler.fetch_next_work()
+                    scheduler.advance_to_next_work()
+                    work_tile = scheduler.get_current_work()
+                
+                stg1_pipe.producer_tail(s1_pstate)
     
     @cute.jit
     def consumer_stg1(
