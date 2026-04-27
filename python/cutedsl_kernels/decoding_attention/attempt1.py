@@ -1,9 +1,13 @@
 from typing import Tuple
+import enum
 
 import cutlass
 from cutlass import cute, pipeline
 from cdsl_helpers import shared, mma, pipeline as my_pipeline, layout as my_layout, store as my_store
 from . import attn_scheduler
+
+class NamedBarrierFwd(enum.IntEnum):
+    Epilogue = enum.auto()
 
 def get_epi_tensor_atom(t: cute.Tensor, epi_smem_layout_staged: cute.ComposedLayout, epi_tile: Tuple[int, int]):
     """
@@ -32,6 +36,15 @@ def _store_t(src: cute.Tensor, dst: cute.Tensor, tiled_gemm: cute.TiledMma, tidx
     r2s_s = thr_copy_r2s.partition_D(dst_t)
     r2s_r = thr_copy_r2s.retile(src)
     cute.copy(copy_atom, r2s_r, r2s_s)
+
+@cute.jit
+def _tma_store_single(src: cute.Tensor, dst: cute.Tensor, tile_m: int, tile_n: int, idx_m: int, idx_n: int, s2g_atom: cute.CopyAtom):
+    gO = cute.local_tile(dst, (tile_m, tile_n), (idx_m, idx_n))
+    store_O, _, _ = shared.tma_get_copy_fn(
+        s2g_atom, 0, cute.make_layout(1), src, gO, single_stage=True
+    )
+    store_O()
+
 
 
 class Kernel:
@@ -170,7 +183,7 @@ class Kernel:
                 tile_coord = work_tile.tile_idx
                 head_idx = tile_coord[0]
                 s1_cstate, tiled_gemm_1 = self.consumer_stg1(
-                    stg1_pipe, s1_cstate, k_iters, head_idx, tiled_gemm_1, tidx, sX, sWq, sWk, sWv, acc_q, acc_k, acc_v, sK, sV, mVc_s_atom, mVc_s, mKc_s_atom, mKc_s
+                    stg1_pipe, s1_cstate, k_iters, head_idx, warp_idx, tiled_gemm_1, tidx, sX, sWq, sWk, sWv, acc_q, acc_k, acc_v, sK, sV, mVc_s_atom, mVc_s, mKc_s_atom, mKc_s
                 )
                 scheduler.fetch_next_work()
                 scheduler.advance_to_next_work()
@@ -199,7 +212,7 @@ class Kernel:
     @cute.jit
     def consumer_stg1(
         self, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, 
-        k_iters: cutlass.Int32, head_idx: cutlass.Int32, tiled_gemm: cute.TiledMma, tidx: cutlass.Int32,
+        k_iters: cutlass.Int32, head_idx: cutlass.Int32, warp_idx: cutlass.Int32, tiled_gemm: cute.TiledMma, tidx: cutlass.Int32,
         sX: cute.Tensor, sWq: cute.Tensor, sWk: cute.Tensor, sWv: cute.Tensor,
         acc_q: cute.Tensor, acc_k: cute.Tensor, acc_v: cute.Tensor,
         sK: cute.Tensor, sV: cute.Tensor,
@@ -226,8 +239,18 @@ class Kernel:
 
         _store_t(rK, sK[None, None, 0], tiled_gemm, tidx, self.dtype)
         _store_t(rV, sV[None, None, 0], tiled_gemm, tidx, self.dtype)
+        cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
+        cute.arch.barrier_arrive(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * 32)
 
-        # kCache_slice = mVc_s[None, None, head_idx]
+        if warp_idx == 0:
+            cute.arch.barrier(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * 32)
+            kCache_slice = mKc_s[None, None, head_idx]
+            vCache_slice = mVc_s[None, None, head_idx]
+            num_chunks = cute.size(mKc_s, mode=[2]) // self.m1
+            _tma_store_single(sK[None, None, 0], kCache_slice, self.m1, self.n1, num_chunks - 1, 0, mKc_s_atom)
+            _tma_store_single(sV[None, None, 0], vCache_slice, self.m1, self.n1, num_chunks - 1, 0, mVc_s_atom)
+            cute.arch.cp_async_bulk_commit_group()
+            cute.arch.cp_async_bulk_wait_group(0, read=True)
 
         return state, tiled_gemm
 
