@@ -123,9 +123,9 @@ class Kernel:
             cute.arch.setmaxregister_increase(self.consumer_regs)
             s1_cstate = pipeline.make_pipeline_state(pipeline.PipelineUserType.Consumer, self.stg1_stages)
             work_tile = scheduler.initial_work_tile_info()
-            acc_q = mma.get_acc(tiled_gemm_1, self.n1, self.m1)
-            acc_k = mma.get_acc(tiled_gemm_1, self.n1, self.m1)
-            acc_v = mma.get_acc(tiled_gemm_1, self.n1, self.m1)
+            acc_q = mma.get_acc(tiled_gemm_1, self.n1, self.m1, self.acc_dtype)
+            acc_k = mma.get_acc(tiled_gemm_1, self.n1, self.m1, self.acc_dtype)
+            acc_v = mma.get_acc(tiled_gemm_1, self.n1, self.m1, self.acc_dtype)
             while work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx
                 s1_cstate, tiled_gemm_1 = self.consumer_stg1(
