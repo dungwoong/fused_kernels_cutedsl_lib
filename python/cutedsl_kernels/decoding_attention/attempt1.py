@@ -2,8 +2,36 @@ from typing import Tuple
 
 import cutlass
 from cutlass import cute, pipeline
-from cdsl_helpers import shared, mma, pipeline as my_pipeline
+from cdsl_helpers import shared, mma, pipeline as my_pipeline, layout as my_layout, store as my_store
 from . import attn_scheduler
+
+def get_epi_tensor_atom(t: cute.Tensor, epi_smem_layout_staged: cute.ComposedLayout, epi_tile: Tuple[int, int]):
+    """
+    This only works if you want a single stage
+    and your epi SMEM layout has a single stage.
+    """
+    epi_smem_layout = cute.slice_(epi_smem_layout_staged, (None, None, 0))
+    epi_tma_tensor_layout = cute.composition(cute.make_identity_layout(t.shape), epi_tile)
+    op = cute.nvgpu.cpasync.CopyBulkTensorTileS2GOp()
+    tma_atom, tma_tensor = cute.nvgpu.cpasync.make_tiled_tma_atom(
+        op, t, epi_smem_layout, epi_tma_tensor_layout
+    )
+    return tma_atom, tma_tensor
+
+def transpose_view(a: cute.Tensor) -> cute.Tensor:
+    """Transpose the first two dimensions of a tensor on smem."""
+    shape = (a.shape[1], a.shape[0], *a.shape[2:])
+    order = (1, 0, *range(2, cute.rank(a)))
+    return cute.composition(a, cute.make_ordered_layout(shape, order=order))
+
+@cute.jit
+def _store_t(src: cute.Tensor, dst: cute.Tensor, tiled_gemm: cute.TiledMma, tidx: int, element_type):
+    dst_t = transpose_view(dst)
+    copy_atom = my_store.get_stmatrix(True, 4, element_type)
+    thr_copy_r2s = cute.make_tiled_copy_C(copy_atom, tiled_gemm).get_slice(tidx)
+    r2s_s = thr_copy_r2s.partition_D(dst_t)
+    r2s_r = thr_copy_r2s.retile(src)
+    cute.copy(copy_atom, r2s_r, r2s_s)
 
 
 class Kernel:
@@ -45,11 +73,14 @@ class Kernel:
 
         mKcache, mVcache = (32, 1024, 128)
         """
-        print(mKcache)
+        mKcache = my_layout.select(mKcache, [1, 2, 0])
+        mVcache = my_layout.select(mVcache, [1, 2, 0])
         sX_layout = shared.get_smem_layout_row_major(self.dtype, self.m1, self.k1, self.stg1_stages)
         sWq_layout = shared.get_smem_layout_row_major(self.dtype, self.n1, self.k1, self.stg1_stages)
         sWk_layout = shared.get_smem_layout_row_major(self.dtype, self.n1, self.k1, self.stg1_stages)
         sWv_layout = shared.get_smem_layout_row_major(self.dtype, self.n1, self.k1, self.stg1_stages)
+        sK_layout = shared.get_smem_layout_row_major(self.dtype, self.m1, self.n1, 1)
+        sV_layout = shared.get_smem_layout_row_major(self.dtype, self.m1, self.n1, 1)
 
         # Swap M and N. Tiled gemm is reused across all matmuls for stage 1
         tiled_gemm_1 = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.n1, self.m1)
@@ -61,7 +92,8 @@ class Kernel:
         mWq_g2s_atom, mWq_g2s_tensor = shared.get_tma_tensor_and_atom(mWq, sWq_layout, self.n1, self.k1)
         mWk_g2s_atom, mWk_g2s_tensor = shared.get_tma_tensor_and_atom(mWk, sWk_layout, self.n1, self.k1)
         mWv_g2s_atom, mWv_g2s_tensor = shared.get_tma_tensor_and_atom(mWv, sWv_layout, self.n1, self.k1)
-
+        mKcache_s_atom, mKcache_s_tensor = get_epi_tensor_atom(mKcache, sK_layout, (self.m1, self.n1))
+        mVcache_s_atom, mVcache_s_tensor = get_epi_tensor_atom(mVcache, sV_layout, (self.m1, self.n1))
         # normally we pass in output matrix but mX works here
         nheads = mKcache.shape[0]
         scheduler_params = attn_scheduler.HeadAttnTileScheduler.to_underlying_arguments(
@@ -70,10 +102,13 @@ class Kernel:
         grid = attn_scheduler.HeadAttnTileScheduler.get_grid_shape(scheduler_params, 132)
         self.kernel(
             scheduler_params, sX_layout, sWq_layout, sWk_layout, sWv_layout, 
+            sK_layout, sV_layout,
             mX_g2s_atom, mX_g2s_tensor, 
             mWq_g2s_atom, mWq_g2s_tensor, 
             mWk_g2s_atom, mWk_g2s_tensor, 
             mWv_g2s_atom, mWv_g2s_tensor,
+            mKcache_s_atom, mKcache_s_tensor,
+            mVcache_s_atom, mVcache_s_tensor,
             tiled_gemm_1).launch(grid=grid, block=[(self.nconsumer_warps + 4) * cute.arch.WARP_SIZE])
 
     @cute.kernel
@@ -81,17 +116,20 @@ class Kernel:
         self,
         scheduler_params,
         sX_layout, sWq_layout, sWk_layout, sWv_layout,
+        sK_layout, sV_layout,
         mX_atom, mX,
         mWq_atom, mWq,
         mWk_atom, mWk,
         mWv_atom, mWv,
+        mKc_s_atom, mKc_s, # atom/tensor for (S)tore
+        mVc_s_atom, mVc_s,
         tiled_gemm_1,
         ):
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         tidx, _, _ = cute.arch.thread_idx()
 
         # SMEM
-        ss1_t, bars1_t = self._shared_stg1(sX_layout, sWq_layout, sWk_layout, sWv_layout)
+        ss1_t, bars1_t = self._shared_stg1(sX_layout, sWq_layout, sWk_layout, sWv_layout, sK_layout, sV_layout)
         s_alloc = cutlass.utils.SmemAllocator()
         dsmem = s_alloc.allocate(ss1_t.size_in_bytes(), byte_alignment=1024)
         smem_bars1 = s_alloc.allocate(bars1_t)
@@ -102,6 +140,8 @@ class Kernel:
         sWq = shared.smem_get_tensor(s1_smem, 'sWq_ptr', sWq_layout)
         sWk = shared.smem_get_tensor(s1_smem, 'sWk_ptr', sWk_layout)
         sWv = shared.smem_get_tensor(s1_smem, 'sWv_ptr', sWv_layout)
+        sK = shared.smem_get_tensor(s1_smem, 'sK_ptr', sK_layout)
+        sV = shared.smem_get_tensor(s1_smem, 'sV_ptr', sV_layout)
         
         x_bytes = cute.size_in_bytes(self.dtype, cute.select(sX_layout, mode=[0, 1]))
         q_bytes = cute.size_in_bytes(self.dtype, cute.select(sWq_layout, mode=[0, 1]))
@@ -129,7 +169,7 @@ class Kernel:
             while work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx
                 s1_cstate, tiled_gemm_1 = self.consumer_stg1(
-                    stg1_pipe, s1_cstate, k_iters, tiled_gemm_1, tidx, sX, sWq, sWk, sWv, acc_q, acc_k, acc_v
+                    stg1_pipe, s1_cstate, k_iters, head_idx, tiled_gemm_1, tidx, sX, sWq, sWk, sWv, acc_q, acc_k, acc_v, sK, sV, mVc_s_atom, mVc_s, mKc_s_atom, mKc_s
                 )
         if (warp_idx >= self.nconsumer_warps): # Producer
             cute.arch.setmaxregister_decrease(self.producer_regs)
@@ -151,9 +191,12 @@ class Kernel:
     @cute.jit
     def consumer_stg1(
         self, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, 
-        k_iters: cutlass.Int32, tiled_gemm: cute.TiledMma, tidx: cutlass.Int32,
+        k_iters: cutlass.Int32, head_idx: cutlass.Int32, tiled_gemm: cute.TiledMma, tidx: cutlass.Int32,
         sX: cute.Tensor, sWq: cute.Tensor, sWk: cute.Tensor, sWv: cute.Tensor,
-        acc_q: cute.Tensor, acc_k: cute.Tensor, acc_v: cute.Tensor):
+        acc_q: cute.Tensor, acc_k: cute.Tensor, acc_v: cute.Tensor,
+        sK: cute.Tensor, sV: cute.Tensor,
+        mVc_s_atom: cute.CopyAtom, mVc_s: cute.Tensor,
+        mKc_s_atom: cute.CopyAtom, mKc_s: cute.Tensor):
         accumulate_stg1 = False
         for k in cutlass.range(k_iters, unroll=1):
             pipe.consumer_wait(state, pipe.consumer_try_wait(state))
@@ -165,6 +208,19 @@ class Kernel:
             cute.nvgpu.warpgroup.wait_group(0)
             pipe.consumer_release(state)
             state.advance()
+        
+        # Epilogue
+        # Accs are m128n16, store back as m16n128
+        rK = cute.make_fragment_like(acc_k, self.dtype)
+        rV = cute.make_fragment_like(acc_v, self.dtype)
+        rK.store(acc_k.load().to(self.dtype))
+        rV.store(acc_v.load().to(self.dtype))
+
+        _store_t(rK, sK[None, None, 0], tiled_gemm, tidx, self.dtype)
+        _store_t(rV, sV[None, None, 0], tiled_gemm, tidx, self.dtype)
+
+        # kCache_slice = mVc_s[None, None, head_idx]
+
         return state, tiled_gemm
 
     @cute.jit
@@ -181,7 +237,7 @@ class Kernel:
             state.advance()
         return state
     
-    def _shared_stg1(self, sX_layout, sQ_layout, sK_layout, sV_layout):
+    def _shared_stg1(self, sX_layout, sQ_layout, sK_layout, sV_layout, soK_layout, soV_layout):
         # Data storage
         SharedStorage = type("SS1", (), dict())
         items = [
@@ -189,6 +245,8 @@ class Kernel:
             ('sWq_ptr', shared.memrange(self.dtype, sQ_layout, 1024)),
             ('sWk_ptr', shared.memrange(self.dtype, sK_layout, 1024)),
             ('sWv_ptr', shared.memrange(self.dtype, sV_layout, 1024)),
+            ('sK_ptr', shared.memrange(self.dtype, soK_layout, 1024)),
+            ('sV_ptr', shared.memrange(self.dtype, soV_layout, 1024)),
             ]
         for k, v in items:
             SharedStorage.__annotations__[k] = v
