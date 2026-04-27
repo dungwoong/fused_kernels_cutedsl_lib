@@ -36,7 +36,7 @@ class Kernel:
     # s means shared tensor e.g. sX
 
     @cute.jit
-    def __call__(self, mX: cute.Tensor, mWq: cute.Tensor, mWk: cute.Tensor, mWv: cute.Tensor, mKcache: cute.Tensor):
+    def __call__(self, mX: cute.Tensor, mWq: cute.Tensor, mWk: cute.Tensor, mWv: cute.Tensor, mKcache: cute.Tensor, mVcache: cute.Tensor):
         """
         e.g. 
         32 heads, dim=128 --> model dim = 4096
@@ -73,7 +73,8 @@ class Kernel:
             mX_g2s_atom, mX_g2s_tensor, 
             mWq_g2s_atom, mWq_g2s_tensor, 
             mWk_g2s_atom, mWk_g2s_tensor, 
-            mWv_g2s_atom, mWv_g2s_tensor).launch(grid=grid, block=[(self.nconsumer_warps + 4) * cute.arch.WARP_SIZE])
+            mWv_g2s_atom, mWv_g2s_tensor,
+            tiled_gemm_1).launch(grid=grid, block=[(self.nconsumer_warps + 4) * cute.arch.WARP_SIZE])
 
     @cute.kernel
     def kernel(
@@ -84,6 +85,7 @@ class Kernel:
         mWq_atom, mWq,
         mWk_atom, mWk,
         mWv_atom, mWv,
+        tiled_gemm_1,
         ):
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         tidx, _, _ = cute.arch.thread_idx()
@@ -121,15 +123,19 @@ class Kernel:
             cute.arch.setmaxregister_increase(self.consumer_regs)
             s1_cstate = pipeline.make_pipeline_state(pipeline.PipelineUserType.Consumer, self.stg1_stages)
             work_tile = scheduler.initial_work_tile_info()
+            acc_q = mma.get_acc(tiled_gemm_1, self.n1, self.m1)
+            acc_k = mma.get_acc(tiled_gemm_1, self.n1, self.m1)
+            acc_v = mma.get_acc(tiled_gemm_1, self.n1, self.m1)
             while work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx
-                s1_cstate = self.consumer_stg1(
-                    stg1_pipe, s1_cstate, k_iters
+                s1_cstate, tiled_gemm_1 = self.consumer_stg1(
+                    stg1_pipe, s1_cstate, k_iters, tiled_gemm_1, tidx, sX, sWq, sWk, sWv, acc_q, acc_k, acc_v
                 )
         if (warp_idx >= self.nconsumer_warps): # Producer
             cute.arch.setmaxregister_decrease(self.producer_regs)
             s1_pstate = pipeline.make_pipeline_state(pipeline.PipelineUserType.Producer, self.stg1_stages)
             work_tile = scheduler.initial_work_tile_info()
+            
             while work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx
                 head_idx = tile_coord[0]
@@ -143,12 +149,23 @@ class Kernel:
             stg1_pipe.producer_tail(s1_pstate)
     
     @cute.jit
-    def consumer_stg1(self, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, k_iters: cutlass.Int32):
+    def consumer_stg1(
+        self, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, 
+        k_iters: cutlass.Int32, tiled_gemm: cute.TiledMma, tidx: cutlass.Int32,
+        sX: cute.Tensor, sWq: cute.Tensor, sWk: cute.Tensor, sWv: cute.Tensor,
+        acc_q: cute.Tensor, acc_k: cute.Tensor, acc_v: cute.Tensor):
+        accumulate_stg1 = False
         for k in cutlass.range(k_iters, unroll=1):
             pipe.consumer_wait(state, pipe.consumer_try_wait(state))
+
+            # Here, you get Q, K and V transposed by taking e.g. Wq^T @ X^T = Q^T
+            mma.accumulating_gemm_ss(tidx, tiled_gemm, sWq, sX, acc_q, state, state, accumulate_stg1, -1)
+            mma.accumulating_gemm_ss(tidx, tiled_gemm, sWk, sX, acc_k, state, state, accumulate_stg1, -1)
+            mma.accumulating_gemm_ss(tidx, tiled_gemm, sWv, sX, acc_v, state, state, accumulate_stg1, -1)
+            cute.nvgpu.warpgroup.wait_group(0)
             pipe.consumer_release(state)
             state.advance()
-        return state
+        return state, tiled_gemm
 
     @cute.jit
     def producer_stg1(self, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, k_iters: cutlass.Int32, head_idx: cutlass.Int32, tmaa_X, mX, sX, tmaa_Wq, mWq, sWq, tmaa_Wk, mWk, sWk, tmaa_Wv, mWv, sWv):
