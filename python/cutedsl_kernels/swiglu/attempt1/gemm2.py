@@ -57,7 +57,7 @@ def silu_f32(x: cutlass.Float32) -> cutlass.Float32:
 class GemmSM90:
     def __init__(
         self,
-        tile_shape_mn: Tuple[int, int],
+        tile_shape_mnk: Tuple[int, int, int],
         epi_tile_mn: Tuple[int, int],
         cluster_shape_mnk: Tuple[int, int, int],
         atom_layout_mn: Tuple[int, int],
@@ -73,7 +73,7 @@ class GemmSM90:
         self.scheduler_group_size = Int32(8)
         self.cluster_shape_mnk = cluster_shape_mnk
         self.cluster_layout_mnk = None
-        self.cta_tile_shape_mnk = (*tile_shape_mn, -1) # K-dim decided later
+        self.cta_tile_shape_mnk = tile_shape_mnk
         tile_M, tile_N = self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1]
 
         # Atom layout
@@ -597,9 +597,9 @@ class GemmSM90:
             self.atom_layout_mnk,
             tiler_mn=(64, self.cta_tile_shape_mnk[1] // self.atom_layout_mnk[1])
         )
-        mma_k = 16
-        mma_inst_tile_k = 4
-        self.cta_tile_shape_mnk = (self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1], mma_k * mma_inst_tile_k)
+        # mma_k = 16
+        # mma_inst_tile_k = 4
+        # self.cta_tile_shape_mnk = (self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1], mma_k * mma_inst_tile_k)
     
     def populate_smem_layouts(self):
         self.a_smem_layout_staged = sm90_utils.make_smem_layout_a(

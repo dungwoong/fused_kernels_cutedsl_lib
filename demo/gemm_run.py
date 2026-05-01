@@ -2,6 +2,7 @@ import torch
 from triton.testing import do_bench
 from cutedsl_kernels import Gemm4SM90
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
+import time
 
 if __name__ == '__main__':
     print('Starting...')
@@ -59,7 +60,9 @@ if __name__ == '__main__':
     
     if IS_SPEED:
         my_ms = do_bench(lambda: cdsl_func(a, b))
+        time.sleep(2)
         other_ms = do_bench(torch_gemm)
         print(f'{my_ms=}, {other_ms=}')
         my_flops, other_flops = get_tflops(my_ms), get_tflops(other_ms)
         print(f'{my_flops=}, {other_flops=}')
+        print(f'{other_ms/my_ms}')
