@@ -24,6 +24,16 @@ from .my_utils import make_smem_layout_epi
 from cdsl_helpers import shared, mma
 from .cdsl_fn_utils import convert_from_dlpack, make_fake_tensor
 
+"""
+Things I can try:
+- Each warpgroup does their own epilogue, so there's no sync needed. 
+  Then, whatever warpgroup finishes first could start on epilogue without waiting up.
+  Not sure how staged epilogue would work though...
+- We dispatch prologue MMAs after the last TMA is done.
+
+These methods are orthogonal since dispatching prologue MMAs requires all consumer warpgroups to be ready.
+"""
+
 THREADS_PER_WG = 128
 
 @cute.jit
