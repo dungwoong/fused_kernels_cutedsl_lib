@@ -1,6 +1,6 @@
 import torch
 from triton.testing import do_bench
-from cutedsl_kernels import SwigluSM90
+from cutedsl_kernels import Swiglu2SM90
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 
 def get_rmse(ref: torch.Tensor, o: torch.Tensor):
@@ -51,16 +51,16 @@ if __name__ == '__main__':
     ref_64 = torch_swiglu(a64, bb164)
     ref = torch_swiglu(a, bb1)
 
-    gemm = SwigluSM90(
-        tile_shape_mn=(128, 128),
+    gemm = Swiglu2SM90(
+        tile_shape_mnk=(128, 128, 32),
         epi_tile_mn=(128, 32),
         cluster_shape_mnk=(2, 1, 1),
         atom_layout_mn=(2, 1),
-        ab_stage=3,
+        ab_stage=6,
         epi_stage=2,
         reuse_ab=False,
         is_persistent=True,
-        gemm_n_prologue=0,
+        gemm_n_prologue=1,
     )
     compiled_gemm = compile_cutedsl((a, b, b1, c), gemm, False)
     compiled_gemm(a, b, b1, c)

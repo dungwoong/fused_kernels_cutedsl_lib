@@ -32,6 +32,7 @@ Things I can try:
 - We dispatch prologue MMAs after the last TMA is done.
 
 These methods are orthogonal since dispatching prologue MMAs requires all consumer warpgroups to be ready.
+I'd lean towards trying the second one first.
 """
 
 THREADS_PER_WG = 128
@@ -209,7 +210,6 @@ class GemmSM90:
         storage = smem.allocate(self.shared_storage)
 
         ab_pipeline = self.make_ab_pipeline(storage.mainloop_pipeline_barriers.data_ptr(), cute.make_layout((1, *cluster_layout_mnk.shape)))
-        b1_pipeline = self.make_b1_pipeline(storage.b1_barriers.data_ptr(), cute.make_layout((1, *cluster_layout_mnk.shape)))
 
         pipeline_init_arrive()
         pipeline_init_wait()
@@ -253,7 +253,7 @@ class GemmSM90:
                     
                     # [DONE]
                     ab_producer_state = self.produce_mainloop(
-                        k_iters, ab_pipeline, b1_pipeline, ab_producer_state, 
+                        k_iters, ab_pipeline, ab_producer_state, 
                         tma_atom_a, tma_atom_b, tma_atom_b1,
                         mA, sA, mB, sB, mB1, sB1,
                         tile_coord_mnkl, block_in_cluster_coord_mnk, cluster_layout_mnk, a_mcast_mask, b_mcast_mask
@@ -261,9 +261,7 @@ class GemmSM90:
                     tile_scheduler.fetch_next_work()
                     tile_scheduler.advance_to_next_work()
                     work_tile = tile_scheduler.get_current_work()
-                b1_producer_state = ab_producer_state.clone()
                 ab_pipeline.producer_tail(ab_producer_state)
-                b1_pipeline.producer_tail(b1_producer_state)
 
         if warp_idx < self.ab_load_warp_id: # Consumer
             cute.arch.warpgroup_reg_alloc(self.num_regs_mma)
@@ -271,6 +269,7 @@ class GemmSM90:
             warp_group_idx = cute.arch.make_warp_uniform(tidx // THREADS_PER_WG)
             
             ab_consumer_state = pipeline.make_pipeline_state(pipeline.PipelineUserType.Consumer, self.ab_stage) # TODO
+            ab_release_state = ab_consumer_state.clone()
 
             thr_mma = tiled_mma.get_slice(tidx)
 
@@ -289,11 +288,14 @@ class GemmSM90:
                 tile_coord_mnk = (work_tile.tile_idx[0], work_tile.tile_idx[1], work_tile.tile_idx[2])
                 gA_mk = cute.local_tile(mA, cute.select(self.cta_tile_shape_mnk, [0, 2]), (tile_coord_mnk[0], None))
                 k_iters = cute.size(gA_mk, mode=[2]) # m, k, restK
-
-                # [DONE]
-                ab_consumer_state, tiled_mma = self.consume_mainloop(k_iters, tiled_mma, accumulators_ab, accumulators_ab1, ab_pipeline, b1_pipeline, ab_consumer_state, tCrA, tCrB, tCrB1, tidx, sA, sB, sB1)
-
-                #
+                
+                # Precondition: gemm n prologue valid
+                accumulate_O = False
+                ab_consumer_state, tiled_mma, accumulate_O = self.gemm_start_loop(tidx, self.gemm_n_prologue, tiled_mma, accumulators_ab, accumulators_ab1, ab_pipeline, ab_consumer_state, sA, sB, sB1, accumulate_O)
+                ab_consumer_state, ab_release_state, accumulate_O, tiled_mma = self.gemm_middle_loop(tidx, self.gemm_n_prologue, k_iters, tiled_mma, accumulators_ab, accumulators_ab1, ab_pipeline, ab_consumer_state, ab_release_state, sA, sB, sB1, self.gemm_n_prologue, accumulate_O)
+                ab_release_state = self.gemm_end_release(self.gemm_n_prologue, ab_pipeline, ab_release_state)
+                
+                # ab_consumer_state, tiled_mma = self.consume_mainloop(k_iters, tiled_mma, accumulators_ab, accumulators_ab1, ab_pipeline, ab_consumer_state, tCrA, tCrB, tCrB1, tidx, sA, sB, sB1)
                 self.epilogue(tiled_mma, epi_mC, epi_copy, sD, accumulators_ab, accumulators_ab1, tile_coord_mnk, tidx, warp_idx)
 
                 # NOTE no need to fetch_next_work, that's done by the producer
@@ -404,35 +406,80 @@ class GemmSM90:
 
     @cute.jit
     def produce_mainloop(
-        self, k_iters: Int32, pipe: pipeline.PipelineAsync, pipe_b1: pipeline.PipelineAsync, state: pipeline.PipelineState, 
+        self, k_iters: Int32, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, 
         tma_atom_a: cute.TiledCopy, tma_atom_b: cute.TiledCopy, tma_atom_b1: cute.TiledCopy,
         mA: cute.Tensor, sA: cute.Tensor, mB: cute.Tensor, sB: cute.Tensor, mB1: cute.Tensor, sB1: cute.Tensor,
         tile_coord_mnkl: cute.Coord, block_in_cluster_coord_mnk: cute.Coord, cluster_layout_mnk: tuple, a_mcast_mask, b_mcast_mask
         ):
-        peek_ab_empty_status = Boolean(True)
-        if 0 < k_iters:
-            peek_ab_empty_status = pipe.producer_try_acquire(state)
 
         for k_tile in cutlass.range(k_iters, unroll=1, unroll_full=False):
-            pipe.producer_acquire(state, peek_ab_empty_status) # wait empty arrive full
+            pipe.producer_acquire(state, pipe.producer_try_acquire(state)) # wait empty arrive full
             shared.tma_copy(tma_atom_a, mA, sA, self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2], tile_coord_mnkl[0], k_tile, pipe, state, block_in_cluster_coord_mnk[1], cute.make_layout(cute.slice_(cluster_layout_mnk, (0, None, 0)).shape), a_mcast_mask)
             shared.tma_copy(tma_atom_b, mB, sB, self.cta_tile_shape_mnk[1], self.cta_tile_shape_mnk[2], tile_coord_mnkl[1], k_tile, pipe, state, block_in_cluster_coord_mnk[0], cute.make_layout(cute.slice_(cluster_layout_mnk, (None, 0, 0)).shape), b_mcast_mask)
-            pipe.producer_commit(state)
-
-            pipe_b1.producer_acquire(state, pipe_b1.producer_try_acquire(state))
-            shared.tma_copy(tma_atom_b1, mB1, sB1, self.cta_tile_shape_mnk[1], self.cta_tile_shape_mnk[2], tile_coord_mnkl[1], k_tile, pipe_b1, state, block_in_cluster_coord_mnk[0], cute.make_layout(cute.slice_(cluster_layout_mnk, (None, 0, 0)).shape), b_mcast_mask)
-            pipe_b1.producer_commit(state)
+            shared.tma_copy(tma_atom_b1, mB1, sB1, self.cta_tile_shape_mnk[1], self.cta_tile_shape_mnk[2], tile_coord_mnkl[1], k_tile, pipe, state, block_in_cluster_coord_mnk[0], cute.make_layout(cute.slice_(cluster_layout_mnk, (None, 0, 0)).shape), b_mcast_mask)
             state.advance()
-
-            peek_ab_empty_status = Boolean(True)
-            if k_tile + 1 < k_iters:
-                peek_ab_empty_status = pipe.producer_try_acquire(state)
         
         # NOTE: don't call producer tail here, you call it after all loads(from persistent) are done
         return state
+    
+    @cute.jit
+    def gemm_start_loop(
+        self, tidx: Int32, n_prologue: Int32, tiled_mma: cute.TiledMma, 
+        accumulators_ab: cute.Tensor, accumulators_ab1: cute.Tensor, 
+        pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState,
+        sA: cute.Tensor, sB: cute.Tensor, sB1: cute.Tensor,
+        accumulate_O: bool):
+        """
+        Dispatches <n_prologue> gemms, without waiting
+        """
+        for _ in cutlass.range(n_prologue, unroll=1):
+            pipe.consumer_wait(read_state, pipe.consumer_try_wait(read_state))
+            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators_ab, read_state, read_state, accumulate_O, -1)
+            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB1, accumulators_ab1, read_state, read_state, accumulate_O, -1)
+            accumulate_O = True
+            read_state.advance()
+        return read_state, tiled_mma, accumulate_O
+    
+    @cute.jit
+    def gemm_middle_loop(
+        self, tidx: Int32, start_iter: Int32, end_iter: Int32, tiled_mma: cute.TiledMma, 
+        accumulators_ab: cute.Tensor, accumulators_ab1: cute.Tensor, 
+        pipe: pipeline.PipelineAsync, 
+        read_state: pipeline.PipelineState, release_state: pipeline.PipelineState, 
+        sA: cute.Tensor, sB: cute.Tensor, sB1: cute.Tensor,
+        wait_amount: Int32, accumulate_O: bool):
+        """
+        Performs the mainloop from <start_iter> to <end_iter>, 
+        after each step wait <wait_amount>
+        """
+        for _ in cutlass.range(start_iter, end_iter, unroll=1):
+            pipe.consumer_wait(read_state, pipe.consumer_try_wait(read_state))
+            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators_ab, read_state, read_state, accumulate_O, -1)
+            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB1, accumulators_ab1, read_state, read_state, accumulate_O, -1)
+            accumulate_O = True
+            cute.nvgpu.warpgroup.wait_group(wait_amount)
+            pipe.consumer_release(release_state)
+            read_state.advance()
+            release_state.advance()
+        return read_state, release_state, accumulate_O, tiled_mma
+    
+    @cute.jit
+    def gemm_end_release(self, n_prologue: Int32, pipe: pipeline.PipelineAsync, release_state: pipeline.PipelineState):
+        """
+        Wait at the remaining <n_prologue> barriers after
+        finishing all WGMMAs
+        """
+        cute.nvgpu.warpgroup.wait_group(0)
+        for _ in cutlass.range(n_prologue):
+            pipe.consumer_release(release_state)
+            release_state.advance()
+        return release_state
 
     @cute.jit
-    def consume_mainloop(self, k_iters: Int32, tiled_mma: cute.TiledMma, accumulators_ab: cute.Tensor, accumulators_ab1: cute.Tensor, pipe: pipeline.PipelineAsync, pipe_b1: pipeline.PipelineAsync, read_state: pipeline.PipelineState, tCrA: cute.Tensor, tCrB: cute.Tensor, tCrB1: cute.Tensor, tidx: Int32, sA: cute.Tensor, sB: cute.Tensor, sB1: cute.Tensor):
+    def consume_mainloop(self, k_iters: Int32, tiled_mma: cute.TiledMma, accumulators_ab: cute.Tensor, accumulators_ab1: cute.Tensor, pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState, tCrA: cute.Tensor, tCrB: cute.Tensor, tCrB1: cute.Tensor, tidx: Int32, sA: cute.Tensor, sB: cute.Tensor, sB1: cute.Tensor):
+        """
+        (UNUSED): old mainloop
+        """
         release_state = read_state.clone() # NOTE: read is where we are reading from, release is when we are finished with the tile
         num_prologue_mma = min(self.gemm_n_prologue, k_iters)
         wait_amount = num_prologue_mma * 2 # since we dispatch 2 gemms
@@ -447,8 +494,6 @@ class GemmSM90:
         for k_tile in cutlass.range(num_prologue_mma):
             pipe.consumer_wait(read_state, peek_ab_full_status)
             mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators_ab, read_state, read_state, accumulate_O, -1)
-            
-            pipe_b1.consumer_wait(read_state, pipe_b1.consumer_try_wait(read_state))
             mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB1, accumulators_ab1, read_state, read_state, accumulate_O, -1)
             accumulate_O = True
             read_state.advance()
@@ -459,13 +504,11 @@ class GemmSM90:
         for k_tile in cutlass.range(num_prologue_mma, k_iters, unroll=1, unroll_full=False):
             pipe.consumer_wait(read_state, peek_ab_full_status)
             mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators_ab, read_state, read_state, accumulate_O, -1)
-            pipe_b1.consumer_wait(read_state, pipe_b1.consumer_try_wait(read_state))
             mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB1, accumulators_ab1, read_state, read_state, accumulate_O, -1)
             accumulate_O = True
             cute.nvgpu.warpgroup.wait_group(wait_amount)
             # cute.nvgpu.warpgroup.wait_group(0)
             pipe.consumer_release(release_state)
-            pipe_b1.consumer_release(release_state)
             read_state.advance()
             release_state.advance()
 
@@ -476,7 +519,6 @@ class GemmSM90:
         cute.nvgpu.warpgroup.wait_group(0)
         for k_tile in cutlass.range(num_prologue_mma, unroll=1):
             pipe.consumer_release(release_state)
-            pipe_b1.consumer_release(release_state)
             release_state.advance()
         return read_state, tiled_mma
 
@@ -508,32 +550,32 @@ class GemmSM90:
         return pipeline.PipelineTmaAsync.create(
             barrier_storage=mbar_ptr,
             num_stages=self.ab_stage,
-            tx_count=self.tma_ab_load_bytes,
+            tx_count=self.tma_ab_load_bytes + self.tma_b1_load_bytes,
             producer_group=producer_group,
             consumer_group=consumer_group,
             cta_layout_vmnk=cta_layout_vmnk,
             defer_sync=True,
         )
 
-    @cute.jit
-    def make_b1_pipeline(self, mbar_ptr: cute.Pointer, cta_layout_vmnk: cute.Layout):
-        num_producers = 1
-        mcast_size = self.mcast_ctas_b
-        num_warps = self.mma_warpgroups * 4
-        num_consumers = num_warps * mcast_size # IMPORTANT!!!
+    # @cute.jit
+    # def make_b1_pipeline(self, mbar_ptr: cute.Pointer, cta_layout_vmnk: cute.Layout):
+    #     num_producers = 1
+    #     mcast_size = self.mcast_ctas_b
+    #     num_warps = self.mma_warpgroups * 4
+    #     num_consumers = num_warps * mcast_size # IMPORTANT!!!
 
-        producer_group = pipeline.CooperativeGroup(pipeline.Agent.Thread, num_producers)
-        consumer_group = pipeline.CooperativeGroup(pipeline.Agent.Thread, num_consumers)
-        # reminder: CTA layout is only used for syncing
-        return pipeline.PipelineTmaAsync.create(
-            barrier_storage=mbar_ptr,
-            num_stages=self.ab_stage,
-            tx_count=self.tma_b1_load_bytes,
-            producer_group=producer_group,
-            consumer_group=consumer_group,
-            cta_layout_vmnk=cta_layout_vmnk,
-            defer_sync=True,
-        )
+    #     producer_group = pipeline.CooperativeGroup(pipeline.Agent.Thread, num_producers)
+    #     consumer_group = pipeline.CooperativeGroup(pipeline.Agent.Thread, num_consumers)
+    #     # reminder: CTA layout is only used for syncing
+    #     return pipeline.PipelineTmaAsync.create(
+    #         barrier_storage=mbar_ptr,
+    #         num_stages=self.ab_stage,
+    #         tx_count=self.tma_b1_load_bytes,
+    #         producer_group=producer_group,
+    #         consumer_group=consumer_group,
+    #         cta_layout_vmnk=cta_layout_vmnk,
+    #         defer_sync=True,
+    #     )
 
     def get_tile_scheduler_args(self, mA: cute.Tensor, mB: cute.Tensor, mC: cute.Tensor):
         batch_size = mC.shape[2] if cute.rank(mC.layout) == 3 else 1
