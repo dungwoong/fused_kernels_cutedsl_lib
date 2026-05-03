@@ -36,7 +36,7 @@ def make_fake_tensor(dtype, shape, divisibility=1, leading_dim=-1) -> Optional[c
     )
 
 def compile_cutedsl(tensors, kernel, include_stream=True):
-    cute_tensors = [convert_from_dlpack(t) for t in tensors]
+    cute_tensors = [convert_from_dlpack(t) if isinstance(t, torch.Tensor) else t for t in tensors]
     if include_stream:
         compiled = cute.compile(kernel, *cute_tensors, STREAM, options='--enable-tvm-ffi')
     else:

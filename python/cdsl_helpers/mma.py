@@ -92,11 +92,17 @@ def accumulating_gemm_ss(
     sA: cute.Tensor,
     sB: cute.Tensor,
     acc: cute.Tensor,
-    a_state: cutlass.pipeline.PipelineState,
-    b_state: cutlass.pipeline.PipelineState,
+    a_state: cutlass.pipeline.PipelineState | cutlass.Int32,
+    b_state: cutlass.pipeline.PipelineState | cutlass.Int32,
     accumulate: bool,
     wg_wait: int = 0,
 ):
+    a_idx = a_state
+    b_idx = b_state
+    if cutlass.const_expr(isinstance(a_state, cutlass.pipeline.PipelineState)):
+        a_idx = a_state.index
+    if cutlass.const_expr(isinstance(b_state, cutlass.pipeline.PipelineState)):
+        b_idx = b_state.index
     thr_mma = tiled_mma.get_slice(tidx)
     tSrA = tiled_mma.make_fragment_A(thr_mma.partition_A(sA))
     tSrB = tiled_mma.make_fragment_B(thr_mma.partition_B(sB))
@@ -106,8 +112,8 @@ def accumulating_gemm_ss(
         tSrA,
         tSrB,
         not accumulate,
-        A_idx=a_state.index,
-        B_idx=b_state.index,
+        A_idx=a_idx,
+        B_idx=b_idx,
         wg_wait=wg_wait,
     )
 
@@ -120,11 +126,17 @@ def single_gemm_ss(
     tiled_mma: cute.TiledMma,
     sA: cute.Tensor,
     sB: cute.Tensor,
-    a_state: cutlass.pipeline.PipelineState,
-    b_state: cutlass.pipeline.PipelineState,
+    a_state: cutlass.pipeline.PipelineState | cutlass.Int32,
+    b_state: cutlass.pipeline.PipelineState | cutlass.Int32,
     wg_wait: int = 0,
 ):
+    a_idx = a_state
+    b_idx = b_state
+    if cutlass.const_expr(isinstance(a_state, cutlass.pipeline.PipelineState)):
+        a_idx = a_state.index
+    if cutlass.const_expr(isinstance(b_state, cutlass.pipeline.PipelineState)):
+        b_idx = b_state.index
     thr_mma = tiled_mma.get_slice(tidx)
     tSrA = tiled_mma.make_fragment_A(thr_mma.partition_A(sA))
     tSrB = tiled_mma.make_fragment_B(thr_mma.partition_B(sB))
-    gemm_zero_init(tiled_mma, (rows, cols), tSrA, tSrB, a_state.index, b_state.index, wg_wait=wg_wait)
+    return gemm_zero_init(tiled_mma, (rows, cols), tSrA, tSrB, a_idx, b_idx, wg_wait=wg_wait)

@@ -25,3 +25,7 @@ if consumer:
 # More stuff
 
 I THINK in triton you have to specifically pass in a descriptor to use TMA and you have to call warp specialize to warp specialize so the Trinity kernel has neither of these.
+
+If we can, maybe 1 warp does the gemms, another warp does the softmax since low tile requirements.
+
+OR 2 warps doing gemms with lower registers(e.g. 160) and another warpgroup doing softmax.
