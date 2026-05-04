@@ -45,11 +45,12 @@ if __name__ == '__main__':
 
     O = torch.empty((H, M, D), dtype=dtype).to('cuda')
 
-    def torch_fn(Q, K, Vt):
-        P = (Q @ K.transpose(1, 2)) * (multiplier * math.log2(math.e))
+    def torch_fn(Q_, K_, Vt_):
+        P = (Q_ @ K_.transpose(1, 2)).mul(multiplier * math.log2(math.e))
         pre_softmax = torch.exp2(P)
-        o = (torch.exp2(P) @ Vt)
-        return o * torch.reciprocal(torch.sum(pre_softmax, dim=-1)[..., None])
+        o = (pre_softmax @ Vt_)
+        rowsum = torch.sum(pre_softmax, dim=-1)[..., None]
+        return o * torch.reciprocal(rowsum)
     ref64 = torch_fn(Q64, K64, Vt64)
     ref = torch_fn(Q, K, Vt)
     # ref = Q @ K[:, -128:, :].transpose(1, 2)

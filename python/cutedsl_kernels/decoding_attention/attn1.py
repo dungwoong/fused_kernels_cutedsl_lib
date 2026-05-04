@@ -101,7 +101,7 @@ def block_col_sum(
 def grab_values_16(reduce_acc: cute.Tensor, dtype):
     output = cute.make_rmem_tensor(4, dtype)
     lane_idx = cute.arch.lane_idx()
-    idx0 = lane_idx % 4
+    idx0 = (lane_idx % 4) * 2 # NOTE missed the *2 initially
     output[0] = reduce_acc[idx0]
     output[1] = reduce_acc[idx0 + 1]
     output[2] = reduce_acc[8 + idx0]
