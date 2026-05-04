@@ -28,9 +28,12 @@ def get_smem_struct(fields):
     return cute.struct(cls)  # maybe we can cute.struct later
 
 
-def smem_get_tensor(storage, field_name, layout):
+def smem_get_tensor(storage, field_name, layout: cute.ComposedLayout | cute.Layout):
     # sA = storage.sA.get_tensor(a_smem_layout_staged.outer, swizzle=a_smem_layout_staged.inner)
-    return getattr(storage, field_name).get_tensor(layout.outer, swizzle=layout.inner)
+    if isinstance(layout, cute.ComposedLayout):
+        return getattr(storage, field_name).get_tensor(layout.outer, swizzle=layout.inner)
+    else:
+        return getattr(storage, field_name).get_tensor(layout)
 
 
 def memrange(dtype, smem_layout, align):

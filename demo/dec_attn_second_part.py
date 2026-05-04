@@ -17,8 +17,8 @@ if __name__ == '__main__':
     M = 16
     D = 128
     N = 4096
-    P = 1024
-    H = 128
+    P = 256
+    H = 1
 
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
@@ -54,12 +54,13 @@ if __name__ == '__main__':
     # print(O[0, :16, :16])
 
     if not IS_NCU:
+        print(torch.sum(Q @ K.transpose(1, 2), axis=-1))
         print('max err', (ref - O).max().item())
         allclose = torch.allclose(ref, O)
         print(f'{allclose=}')
         compiled_torch = torch.compile(torch_fn)
-        my_ms = do_bench(lambda: compiled_attn(*tensors))
-        time.sleep(2)
-        torch_ms = do_bench(compiled_torch)
-        print(f'{my_ms=}, {torch_ms=} ({torch_ms/my_ms})')
+        # my_ms = do_bench(lambda: compiled_attn(*tensors))
+        # time.sleep(2)
+        # torch_ms = do_bench(compiled_torch)
+        # print(f'{my_ms=}, {torch_ms=} ({torch_ms/my_ms})')
 

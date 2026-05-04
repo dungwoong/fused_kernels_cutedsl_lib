@@ -29,3 +29,16 @@ I THINK in triton you have to specifically pass in a descriptor to use TMA and y
 If we can, maybe 1 warp does the gemms, another warp does the softmax since low tile requirements.
 
 OR 2 warps doing gemms with lower registers(e.g. 160) and another warpgroup doing softmax.
+
+Accumulating stuff
+- We can have each thread just hold its own stuff for the sum, until the end when we bfly reduce across 8 threads, and then across warps in the WG for 16 total items so then we can div by them
+- this is the registers btw `((2,2,2),1,1):((1,2,4),0,0)` the first 2 is the 2 items, the second is 16x8(but transpose so 8x16), 3, 4 are the next row. We should get 4 values as output, and we have to sum along the second mode only
+- The output registers will be like (2, 2)
+
+# Debugging col sum
+- I verified that starting from thread values to warp values, I should be correct by putting [1, 2, 3, 4] in the initial accumulator and tracking where data went. It's good UNLESS threads are messing up store locations
+- If we set the acc to 1 instead of 0 initially, the thread accs should be 1 at the end, the warp accs will be 8, and the block accs will be 64. I test and the reg accs differ by 1, warp accs differ by 8 but the block accs have varying differences so the block acc must be the problem.
+
+# Some bugs I had
+- Make sure you keep track of what the layouts will be so you index in the right places
+- I had things wrong so I was always indexing my one thing at 0 and indexing another thing on the moving thing and it was not good.

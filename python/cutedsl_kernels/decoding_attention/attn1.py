@@ -1,11 +1,105 @@
 from typing import Tuple
 import enum
 import math
+import operator
 
 import cutlass
 from cutlass import cute, pipeline
 from cdsl_helpers import shared, mma, pipeline as my_pipeline, layout as my_layout, store as my_store
-from . import attn_scheduler
+from . import attn_scheduler, my_utils
+
+@cute.jit
+def print0(x):
+    tidx, _, _ = cute.arch.thread_idx()
+    bidx, bidy, bidz = cute.arch.block_idx()
+    if cutlass.const_expr(isinstance(x, cute.TensorSSA)):
+        if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
+            cute.print_tensor(x)
+    else:
+        if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
+            cute.printf(x)
+
+class NamedBarrierFwd(enum.IntEnum):
+    Epilogue = enum.auto()
+    WG_Sync = enum.auto()
+    Reduction_Sync = enum.auto()
+
+
+def get_colsum_init_16(dtype):
+    """
+    To colsum a 16x16 block from a ldmatrix formulation, your thread holds 2 items in each 8x8 grid
+    e.g. thread 0 holds (0, 1) and (8, 9)
+    """
+    return cute.make_rmem_tensor(4, dtype)
+
+@cute.jit
+def colsum_16(t: cute.Tensor, acc: cute.Tensor, is_first: bool):
+    """
+    Sum over columns of an MMA accumulator, outputting into <acc>
+    """
+    assert cute.size(t, mode=[1]) == 1 and cute.size(t, mode=[2]) == 1, t # should be ((2, 2, 2), 1, 1)
+    t_mn = my_layout.make_acc_tensor_mn_view(t) # ((2, 2, V), MMA_M, MMA_N, ...) > ((2, MMA_M), (2, V, MMA_N), ...), we want to sum over the first mode
+    for c in cutlass.range(cute.size(acc), unroll_full=True):
+        t_col = t_mn[None, c].load()
+        new_sum = my_utils.fadd_reduce(t_col, init_val=acc[c] if cutlass.const_expr(not is_first) else None)
+        acc[c] = new_sum
+
+
+@cute.jit
+def warp_sum_column(
+    val: cute.TensorSSA | cute.Numeric,
+    width: cutlass.Constexpr[int] = cute.arch.WARP_SIZE
+    ):
+    """
+    Assumes MMA acc so each 4 threads holds the same column
+    (first row is 0-3, second is 4-7)
+    """
+    if cutlass.const_expr(isinstance(val, cute.TensorSSA)):
+        res = cute.make_rmem_tensor(val.shape, val.dtype)
+        for i in cutlass.range_constexpr(cute.size(val.shape)):
+            res[i] = warp_sum_column(val[i], width)
+        return res.load()
+    else:
+        for i in cutlass.range_constexpr(2, int(math.log2(width))):
+            val = val + cute.arch.shuffle_sync_bfly(val, offset=1 << i)
+    return val
+
+@cute.jit
+def block_col_sum(
+    acc: cute.TensorSSA,
+    reduction_buffer: cute.Tensor,
+    num_threads: cutlass.Int32,
+    dtype
+    ):
+    """
+    Buffer will be (16, num_warps)
+    threads 0-3 save 0-7
+    threads 4-7 save 8-15
+    Threads are holding a (4,) accumulator for colsum
+    """
+    nwarps = cute.size(reduction_buffer.shape[1])
+    lane_idx, warp_idx = cute.arch.lane_idx(), cute.arch.warp_idx()
+    idx0, idx1 = lane_idx // 4, lane_idx % 4
+    st_idx = idx0 * 8 + idx1 * 2
+    reg_idx = idx0 * 2
+    if lane_idx < 16:
+        reduction_buffer[st_idx, warp_idx] = acc[reg_idx]
+        reduction_buffer[st_idx + 1, warp_idx] = acc[reg_idx + 1]
+    
+    # For now, just do 16 warp reductions. In the future, I can split up the work
+    # among threads in the warp and even different warps in the WG
+    cute.arch.barrier(barrier_id=NamedBarrierFwd.Reduction_Sync, number_of_threads=num_threads)
+    out = cute.make_rmem_tensor(16, dtype)
+    for i in cutlass.range(16, unroll_full=True):
+        block_reduce_val = 0.0
+        if lane_idx < nwarps:
+            block_reduce_val = reduction_buffer[i, lane_idx]
+        out[i] = cute.arch.warp_reduction(block_reduce_val, operator.add)
+    return out
+
+
+
+
 
 def get_epi_tensor_atom(t: cute.Tensor, epi_smem_layout_staged: cute.ComposedLayout, epi_tile: Tuple[int, int]):
     """
@@ -42,22 +136,6 @@ def _tma_store_single(src: cute.Tensor, dst: cute.Tensor, tile_m: int, tile_n: i
         s2g_atom, 0, cute.make_layout(1), src, gO, single_stage=True
     )
     store_O()
-
-@cute.jit
-def print0(x):
-    tidx, _, _ = cute.arch.thread_idx()
-    bidx, bidy, bidz = cute.arch.block_idx()
-    if cutlass.const_expr(isinstance(x, cute.TensorSSA)):
-        if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
-            cute.print_tensor(x)
-    else:
-        if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
-            cute.printf(x)
-
-class NamedBarrierFwd(enum.IntEnum):
-    Epilogue = enum.auto()
-    WG_Sync = enum.auto()
-
 
 class Kernel:
     """
@@ -99,6 +177,12 @@ class Kernel:
         mV = my_layout.select(mV, [1, 2, 0])
         mO = my_layout.select(mO, [1, 2, 0])
 
+        qk_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.tile_k, self.seq_q)
+        pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q)
+        assert qk_gemm.size == pv_gemm.size
+        consumer_wgs = qk_gemm.size // 128
+        self.nconsumer_warps = consumer_wgs * 4
+
         # QKt = m16nKk128, KQt = mKn16k128 = Pt --> (k, 16)
         sQ_layout = shared.get_smem_layout_row_major(self.dtype, self.seq_q, self.dim, 1)
         sK_layout = shared.get_smem_layout_row_major(self.dtype, self.tile_k, self.dim, self.stages)
@@ -108,14 +192,8 @@ class Kernel:
         # but WGMMA should support A as mn-major according to PTX ISA...
         sP_layout = shared.get_smem_layout_row_major(self.dtype, self.seq_q, self.tile_k, self.p_stages)
         sV_layout = shared.get_smem_layout_row_major(self.dtype, self.dim, self.tile_k, self.stages)
-
         sO_layout = shared.get_smem_layout_row_major(self.dtype, self.seq_q, self.dim, 1)
-
-        qk_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.tile_k, self.seq_q)
-        pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q)
-        assert qk_gemm.size == pv_gemm.size
-        consumer_wgs = qk_gemm.size // 128
-        self.nconsumer_warps = consumer_wgs * 4
+        sSum_layout = cute.make_layout((self.seq_q, self.nconsumer_warps)) # length, num_warps
 
         mQ_g2s_atom, mQ_g2s_tensor = shared.get_tma_tensor_and_atom(mQ, sQ_layout, self.seq_q, self.dim)
         mK_g2s_atom, mK_g2s_tensor = shared.get_tma_tensor_and_atom(mK, sK_layout, self.tile_k, self.dim)
@@ -132,7 +210,7 @@ class Kernel:
 
         self.kernel(
             scheduler_params, softmax_scale_log2,
-            sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout,
+            sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout, sSum_layout,
             mQ_g2s_atom, mQ_g2s_tensor,
             mK_g2s_atom, mK_g2s_tensor,
             mV_g2s_atom, mV_g2s_tensor,
@@ -144,7 +222,7 @@ class Kernel:
     def kernel(
         self,
         scheduler_params, softmax_scale_log2,
-        sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout,
+        sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout, sSum_layout,
         mQ_g2s_atom, mQ, # TMA tensor
         mK_g2s_atom, mK,
         mV_g2s_atom, mV,
@@ -169,7 +247,7 @@ class Kernel:
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         tidx, _, _ = cute.arch.thread_idx()
 
-        ss_t, bars_t = self._shared_cls(sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout)
+        ss_t, bars_t = self._shared_cls(sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout, sSum_layout)
         s_alloc = cutlass.utils.SmemAllocator()
         dsmem = s_alloc.allocate(ss_t)
         smem_bars = s_alloc.allocate(bars_t)
@@ -179,6 +257,7 @@ class Kernel:
         sV = shared.smem_get_tensor(dsmem, 'sV_ptr', sV_layout)
         sP = shared.smem_get_tensor(dsmem, 'sP_ptr', sP_layout)
         sO = shared.smem_get_tensor(dsmem, 'sO_ptr', sO_layout)
+        sSum = shared.smem_get_tensor(dsmem, 'sum_buf', sSum_layout)
 
         q_bytes = cute.size_in_bytes(self.dtype, cute.select(sQ_layout, mode=[0, 1]))
         k_bytes = cute.size_in_bytes(self.dtype, cute.select(sK_layout, mode=[0, 1]))
@@ -211,15 +290,19 @@ class Kernel:
             if work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx
                 head_idx = tile_coord[0]
+
+                acc_sum = get_colsum_init_16(self.acc_dtype)
+                acc_sum.fill(0.0) # NOTE we could do is_first but this is easier
                 accumulate_O = False
                 for k in cutlass.range(k_iters, unroll=1):
                     pipe_k.consumer_wait(state_k, pipe_k.consumer_try_wait(state_k))
                     acc_p = mma.single_gemm_ss(tidx, self.tile_k, self.seq_q, qk_gemm, sK, sQ, state_k, 0)
                     pipe_k.consumer_release(state_k)
-                    acc_p_16 = cute.make_fragment_like(acc_p, self.dtype)
                     
                     # Do the processing, and sum potentially
+                    colsum_16(acc_p, acc_sum, is_first=False)
 
+                    acc_p_16 = cute.make_fragment_like(acc_p, self.dtype)
                     acc_p_16.store(acc_p.load().to(self.dtype))
                     _store_t(acc_p_16, sP[None, None, 0], qk_gemm, tidx, self.dtype)
                     cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
@@ -234,6 +317,12 @@ class Kernel:
                     pipe_v.consumer_release(state_v)
                     state_k.advance()
                     state_v.advance()
+                
+                print0(acc_sum)
+                warp_sum = warp_sum_column(acc_sum.load())
+                print0(warp_sum)
+                col_sum = block_col_sum(warp_sum, sSum, self.nconsumer_warps * cute.arch.WARP_SIZE, self.acc_dtype)
+                print0(col_sum)
 
                 acc_o_16 = cute.make_fragment_like(acc_o, self.dtype)
                 acc_o_16.store(acc_o.load().to(self.dtype))
@@ -285,7 +374,7 @@ class Kernel:
                         state_k.advance()
                         state_v.advance()
     
-    def _shared_cls(self, sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout):
+    def _shared_cls(self, sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout, sSum_layout):
         SharedStorage = type("SS", (), dict())
         items = [
             ('sQ_ptr', shared.memrange(self.dtype, sQ_layout, 1024)),
@@ -293,6 +382,7 @@ class Kernel:
             ('sV_ptr', shared.memrange(self.dtype, sV_layout, 1024)),
             ('sP_ptr', shared.memrange(self.dtype, sP_layout, 1024)),
             ('sO_ptr', shared.memrange(self.dtype, sO_layout, 1024)),
+            ('sum_buf', shared.memrange(self.acc_dtype, sSum_layout, 1024)),
         ]
         for k, v in items:
             SharedStorage.__annotations__[k] = v
