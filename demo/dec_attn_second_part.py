@@ -13,6 +13,8 @@ def get_rmse(ref: torch.Tensor, o: torch.Tensor):
     rmse = mse.sqrt().item()
     return rmse
 
+
+# ncu --set full -o dec_attn -f --kernel-name "regex:^.*cutedsl.*" python3 demo/dec_attn_second_part.py
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
@@ -24,8 +26,8 @@ if __name__ == '__main__':
     M = 16
     D = 128
     N = 4096
-    P = 1024
-    H = 32
+    P = 2048
+    H = 128
     multiplier = D ** -0.5
 
     torch.manual_seed(42)
@@ -68,8 +70,8 @@ if __name__ == '__main__':
     torch.cuda.synchronize()
 
     # print(ref.shape, O.shape)
-    print(ref[0, 0, :4])
-    print(O[0, 0, :4])
+    # print(ref[0, 0, :4])
+    # print(O[0, 0, :4])
     
     # print(O[0, :16, :16])
 

@@ -348,11 +348,16 @@ class Kernel:
                 # print0(acc_sum)
                 warp_sum = warp_sum_column(acc_sum.load())
                 # print0(warp_sum)
+
+                # TODO this is causing stack frame spills(32B)
                 col_sum = block_col_sum(warp_sum, sSum, self.nconsumer_warps * cute.arch.WARP_SIZE, self.acc_dtype)
                 # print0(col_sum)
 
-                # TODO rescale acc here
+                # NOTE this doesn't cause any extra stack frame spills
                 col_sum_needed = grab_values_16(col_sum, self.acc_dtype) # (4,) tensor for the sum
+
+                # TODO this causes 80 more bytes of stack frame spills
+                # I think making all the extra rmem tensors is getting me or something
                 col_scale(acc_o, col_sum_needed)
 
                 acc_o_16 = cute.make_fragment_like(acc_o, self.dtype)
