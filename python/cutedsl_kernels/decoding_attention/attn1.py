@@ -82,7 +82,7 @@ def block_col_sum(
     idx0, idx1 = lane_idx // 4, lane_idx % 4
     st_idx = idx0 * 8 + idx1 * 2
     reg_idx = idx0 * 2
-    if lane_idx < 16:
+    if lane_idx < 8:
         reduction_buffer[st_idx, warp_idx] = acc[reg_idx]
         reduction_buffer[st_idx + 1, warp_idx] = acc[reg_idx + 1]
     
@@ -97,7 +97,32 @@ def block_col_sum(
         out[i] = cute.arch.warp_reduction(block_reduce_val, operator.add)
     return out
 
+@cute.jit
+def grab_values_16(reduce_acc: cute.Tensor, dtype):
+    output = cute.make_rmem_tensor(4, dtype)
+    lane_idx = cute.arch.lane_idx()
+    idx0 = lane_idx % 4
+    output[0] = reduce_acc[idx0]
+    output[1] = reduce_acc[idx0 + 1]
+    output[2] = reduce_acc[8 + idx0]
+    output[3] = reduce_acc[8 + idx0 + 1]
+    return output
 
+@cute.jit
+def scale_exp(acc: cute.Tensor, scale_log2: cutlass.Float32):
+    out = my_utils.exp2f(acc.load() * scale_log2)
+    acc.store(out)
+
+@cute.jit
+def col_scale(gemm_acc: cute.Tensor, scale: cute.Tensor):
+    """
+    We expect scale to be a (4,) tensor
+    and the gemm_acc is from wgmma
+    """
+    acc_mn = my_layout.make_acc_tensor_mn_view(gemm_acc) # ((2, MMA_M), (2, V, MMA_N), ...)
+    for c in cutlass.range(cute.size(scale), unroll_full=True):
+        acc_col = acc_mn[None, c].load() * cute.arch.rcp_approx(scale[c])
+        acc_mn[None, c].store(acc_col)
 
 
 
@@ -298,6 +323,8 @@ class Kernel:
                     pipe_k.consumer_wait(state_k, pipe_k.consumer_try_wait(state_k))
                     acc_p = mma.single_gemm_ss(tidx, self.tile_k, self.seq_q, qk_gemm, sK, sQ, state_k, 0)
                     pipe_k.consumer_release(state_k)
+
+                    scale_exp(acc_p, softmax_scale_log2)
                     
                     # Do the processing, and sum potentially
                     colsum_16(acc_p, acc_sum, is_first=False)
@@ -318,11 +345,15 @@ class Kernel:
                     state_k.advance()
                     state_v.advance()
                 
-                print0(acc_sum)
+                # print0(acc_sum)
                 warp_sum = warp_sum_column(acc_sum.load())
-                print0(warp_sum)
+                # print0(warp_sum)
                 col_sum = block_col_sum(warp_sum, sSum, self.nconsumer_warps * cute.arch.WARP_SIZE, self.acc_dtype)
-                print0(col_sum)
+                # print0(col_sum)
+
+                # TODO rescale acc here
+                col_sum_needed = grab_values_16(col_sum, self.acc_dtype) # (4,) tensor for the sum
+                col_scale(acc_o, col_sum_needed)
 
                 acc_o_16 = cute.make_fragment_like(acc_o, self.dtype)
                 acc_o_16.store(acc_o.load().to(self.dtype))

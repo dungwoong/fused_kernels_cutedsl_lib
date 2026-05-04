@@ -38,6 +38,11 @@ Accumulating stuff
 # Debugging col sum
 - I verified that starting from thread values to warp values, I should be correct by putting [1, 2, 3, 4] in the initial accumulator and tracking where data went. It's good UNLESS threads are messing up store locations
 - If we set the acc to 1 instead of 0 initially, the thread accs should be 1 at the end, the warp accs will be 8, and the block accs will be 64. I test and the reg accs differ by 1, warp accs differ by 8 but the block accs have varying differences so the block acc must be the problem.
+- the problem was I had 16 threads saving stuff to SMEM but it should've been 8
+
+# Col sum setup
+- For reducing the 16 numbers, we could have threads/WGs split up the computation
+- Every thread only needs the 4 numbers they're responsible for...wait and there's 8 threads per thingy so we could just warp reduce optimally for this specific shape lol I guess that kinda makes the case that this is shape/arch specific
 
 # Some bugs I had
 - Make sure you keep track of what the layouts will be so you index in the right places
