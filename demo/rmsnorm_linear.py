@@ -49,13 +49,14 @@ if __name__ == '__main__':
 
     ckernel = RMSNormLinear2SM90(
         tile_shape_mnk=(128, 256, 64),
-        epi_tile_mn=(128, 32),
+        epi_tile_mn=(128, 64),
         cluster_shape_mnk=(2, 1, 1),
         atom_layout_mn=(2, 1),
-        ab_stage=3,
+        ab_stage=4,
         epi_stage=2,
         is_persistent=True,
         gemm_n_prologue=0,
+        pingpong=False,
     )
     ckernel_2 = RMSNormLinear1SM90(
         tile_shape_mn=(128, 256), 
@@ -107,4 +108,4 @@ if __name__ == '__main__':
         torch_ms = do_bench(lambda: compiled_torch(a, b))
         print(f'{my_ms=}, {my_old_ms=}, {torch_ms=}, {gemm_ms=}')
         print(f'Mine : {my_ms} ({torch_ms / my_ms}x)')
-        print(f'Old  : {my_old_ms} ({torch_ms / my_ms if DO_OLD else "n/a"}x)')
+        print(f'Old  : {my_old_ms} ({torch_ms / my_old_ms if DO_OLD else "n/a"}x)')

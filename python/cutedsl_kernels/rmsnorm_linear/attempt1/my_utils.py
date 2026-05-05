@@ -7,6 +7,13 @@ from cutlass.cutlass_dsl import Numeric, dsl_user_op
 from cutlass.utils import LayoutEnum
 
 
+def canonical_warp_group_idx(sync: bool = True) -> cutlass.Int32:
+    warp_group_idx = cute.arch.thread_idx()[0] // 128
+    if const_expr(sync):
+        warp_group_idx = cute.arch.make_warp_uniform(warp_group_idx)
+    return warp_group_idx
+
+
 def tma_get_copy_fn(
     atom: cute.CopyAtom,
     cta_coord: cute.Coord,

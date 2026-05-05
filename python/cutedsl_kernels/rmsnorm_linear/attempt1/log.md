@@ -47,3 +47,11 @@ ptxas info    : Compile time = 107.803 ms
 ```
 - ok it's because the multiplication at the end requires that intermediate summation to stay instead of getting optimized out. So we have to do something about that middle sum now.
 - as a minor fuckup, since A is actually bf16 and the reduction is FP32, I was doing the square in BF16. Gotta add .to(type) and then square and then you can use fma instructions instead of mul.bf16 then add.f32
+
+## Pingpong
+- I don't even know what I was thinking with this one, there's just barely a little more float computation vs tensor core so you get to 90% compute so all this additional sync is not good.
+- implementing ping-pong need to check the wgs are correct since attn had producer first
+
+## Split up the summation, use SMEM at the end
+- horizontal tile so each WG does half the sum
+- first, we should test whether GEMM is still performant like that.

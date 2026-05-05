@@ -1,6 +1,7 @@
 import argparse
 from typing import Tuple, Type
 import math
+import enum
 import cuda.bindings.driver as cuda
 
 import torch
@@ -17,10 +18,15 @@ import cutlass.utils.hopper_helpers as sm90_utils
 
 from .tile_scheduler import SimpleTileSchedulerArguments, SimpleTileScheduler, RasterOrder, get_max_active_clusters
 from .cute_dsl_utils import ParamsBase
-from .my_utils import make_smem_layout_epi
+from .my_utils import make_smem_layout_epi, canonical_warp_group_idx
 from cdsl_helpers import shared, mma, layout as my_layout
 
 THREADS_PER_WG = 128
+
+class NamedBarrierFwd(enum.IntEnum):
+    Epilogue = enum.auto()  # starts from 1 as barrier 0 is reserved for sync_threads()
+    WarpSchedulerWG1 = enum.auto()
+    WarpSchedulerWG2 = enum.auto()
 
 @cute.jit
 def print0(x):
@@ -81,6 +87,13 @@ def make_A_reduction_tensor(tiled_mma: cute.TiledMma, tile_m: int, tile_n: int, 
 
 @cute.jit
 def row_sum_square(a: cute.Tensor, acc: cute.Tensor):
+    """
+    Accumulates A tensor which represents a row of 16x16 ldmatrix frags into acc as a rowsum(acc will have 2 elements)
+    Accumulates in acc.element_type.
+
+    NOTE: must convert a to the correct type before performing square/add
+    to get FMA instructions instead of mul/add
+    """
     a_mn = my_layout.make_acc_tensor_mn_view(a, False) # ((2, MMA_M), (2, V, MMA_N), ...) rows cols
     for r in cutlass.range_constexpr(cute.size(acc)):
         a_row = a_mn[r, None].load().to(acc.element_type)
@@ -139,6 +152,7 @@ class GemmSM90:
         raster_order: RasterOrder = RasterOrder.AlongN,
         is_persistent: bool = False,
         gemm_n_prologue: int = 0,
+        pingpong=False, # internal ping-pong not mainloop/epi pingpong
         ):
         assert gemm_n_prologue == 0, "Prologue not supported for now"
         assert tile_shape_mnk[2] % 16 == 0, 'Tile shape k must be divisible by 16'
@@ -200,6 +214,7 @@ class GemmSM90:
         self.max_active_clusters = get_max_active_clusters(math.prod(cluster_shape_mnk))
 
         self.gemm_n_prologue = gemm_n_prologue
+        self.pingpong = pingpong
 
         # Checks
         assert not (self.reuse_ab and self.is_persistent), "Persistent kernel can't reuse AB for epilogue"
@@ -331,6 +346,7 @@ class GemmSM90:
             if cutlass.const_expr(self.gemm_n_prologue > 0):
                 ab_consumer_state, tiled_mma, accumulate_O = self.gemm_start_loop(tidx, self.gemm_n_prologue, tiled_mma, accumulators, ab_pipeline, ab_consumer_state, sA, sB, accumulate_O)
 
+            self.inter_wg_iwo_init_barrier()
             while work_tile.is_valid_tile:
                 tile_coord_mnk = (work_tile.tile_idx[0], work_tile.tile_idx[1], work_tile.tile_idx[2])
                 gA_mk = cute.local_tile(mA, cute.select(self.cta_tile_shape_mnk, [0, 2]), (tile_coord_mnk[0], None))
@@ -371,7 +387,7 @@ class GemmSM90:
         # NOTE other gemm examples do a cluster arrive/wait, not sure why
         # We use a NamedBarrier since we can't syncthreads(only want to sync consumers)
         epilogue_barrier = pipeline.NamedBarrier(
-            barrier_id=int(1),
+            barrier_id=NamedBarrierFwd.Epilogue,
             num_threads=self.mma_warpgroups * 4 * cute.arch.WARP_SIZE
         )
         if const_expr(self.reuse_ab):
@@ -506,8 +522,10 @@ class GemmSM90:
     def gemm_middle_loop(self, tidx: Int32, start_iter: Int32, end_iter: Int32, tiled_mma: cute.TiledMma, reduction_acc: cute.Tensor, accumulators: cute.Tensor, pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState, release_state: pipeline.PipelineState, sA: cute.Tensor, sB: cute.Tensor, accumulate_O: bool, wait_num: Int32):
         for _ in cutlass.range(start_iter, end_iter, unroll=1):
             pipe.consumer_wait(read_state, pipe.consumer_try_wait(read_state))
-            a_regs = copy_a_wgmma(tidx, tiled_mma, sA[None, None, read_state.index], self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2], self.dtype) 
+            a_regs = copy_a_wgmma(tidx, tiled_mma, sA[None, None, read_state.index], self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2], self.dtype)
+            self.inter_wg_barrier()
             mma.accumulating_gemm_rs(tidx, tiled_mma, a_regs, sB, accumulators, read_state, accumulate_O, -1)
+            self.inter_wg_arrive()
             row_sum_square(a_regs, reduction_acc)
             # self.row_reduce_fused_accums(a_regs, reduction_acc)
             accumulate_O = True
@@ -520,7 +538,8 @@ class GemmSM90:
     @cute.jit
     def row_reduce_fused_accums(self, mma_frag: cute.Tensor, accum: cute.Tensor):
         """
-        I have no idea why, but this is much faster than the other PTX
+        No longer needed, we can use row_sum_square now.
+        Problem was A is in bf16, sum is fp32 so it wasn't correctly lowering to FMA
         """
         # indices 1-8, divide by 2 and then mod 2
         # mma_frag must be rank 3
@@ -533,6 +552,48 @@ class GemmSM90:
                     casted = mma_frag[ldm_idx, r, c].to(self.acc_dtype)
                     tmp = casted * casted
                     accum[(ldm_idx // 2) % 2, r] += tmp
+
+    @cute.jit
+    def inter_wg_iwo_init_barrier(self):
+        """
+        Initially, WG1 arrives at WG0's barrier to kick it off
+        """
+        warp_group_idx = canonical_warp_group_idx(sync=False)
+        if cutlass.const_expr(self.pingpong):
+            if warp_group_idx == 1:
+                cute.arch.barrier_arrive(
+                    barrier_id=int(NamedBarrierFwd.WarpSchedulerWG1),
+                    number_of_threads=2 * THREADS_PER_WG
+                )
+    
+    @cute.jit
+    def inter_wg_barrier(self):
+        """
+        Wait before proceeding
+        """
+        if cutlass.const_expr(self.pingpong):
+            cute.arch.barrier(
+                barrier_id=int(NamedBarrierFwd.WarpSchedulerWG1) + canonical_warp_group_idx(sync=False),
+                number_of_threads=2 * THREADS_PER_WG,
+            )
+    
+    @cute.jit
+    def inter_wg_arrive(self):
+        """
+        Arrive at the other WG's barrier
+        """
+        if cutlass.const_expr(self.pingpong):
+            assert self.mma_warpgroups in [2, 3]
+            cur_wg = canonical_warp_group_idx(sync=False)
+            if cutlass.const_expr(self.mma_warpgroups == 2):
+                next_wg = 1 - cur_wg
+            else:
+                t = cur_wg + 1
+                next_wg = t % self.mma_warpgroups
+            cute.arch.barrier_arrive(
+                barrier_id=int(NamedBarrierFwd.WarpSchedulerWG1) + next_wg,
+                number_of_threads=2 * THREADS_PER_WG
+            )
 
     @cute.jit
     def make_ab_pipeline(self, mbar_ptr: cute.Pointer, cta_layout_vmnk: cute.Layout):
