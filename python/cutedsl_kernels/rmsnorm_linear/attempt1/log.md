@@ -32,3 +32,6 @@ max_rel_incorrect : 26.5
 Next steps, figure out what to do about precision and then I can probably first test other kernels before working on optimization. RMSNorm seems like a bad candidate.
 
 Also, anything I can do to make my work generalize better since I'm just manually hacking layouts at this point
+
+## New RMSNorm+Linear
+- If you try to do WGMMA in SMEM, you will spill. This is potentially causing a Misaligned Address error since now you're trying to get your reduction from local memory instead of other memory spaces.

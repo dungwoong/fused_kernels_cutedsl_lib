@@ -49,6 +49,9 @@ def printwg(x):
             cute.printf(x)
 
 class GemmSM90:
+    """
+    Old GEMM API (requires stream, no tile shape k etc.)
+    """
     def __init__(
         self,
         tile_shape_mn: Tuple[int, int],
