@@ -1,7 +1,7 @@
 import torch
 from triton.testing import do_bench
 from cutedsl_kernels import RMSNormLinear2SM90, RMSNormLinear1SM90
-from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
+from cdsl_helpers.cdsl_fn_utils import compile_cutedsl, STREAM
 import time
 
 EPS = 1e-5
@@ -24,10 +24,12 @@ if __name__ == '__main__':
     parser.add_argument("m", type=int, default=4096)
     parser.add_argument("n", type=int, default=4096)
     parser.add_argument("k", type=int, default=4096)
+    parser.add_argument("--do-old", action='store_true')
     args = parser.parse_args()
     IS_NCU = args.mode == 'ncu'
     IS_DEBUG = args.mode == 'debug'
     IS_SPEED = args.mode == 'speed'
+    DO_OLD = args.do_old
 
     m, n, k = args.m, args.n, args.k
 
@@ -39,40 +41,70 @@ if __name__ == '__main__':
     a = a64.to(dtype)
     b = b64.to(dtype)
     c = torch.empty((m, n), dtype=torch.bfloat16).to('cuda')
+    c_old = torch.empty((m, n), dtype=torch.bfloat16).to('cuda')
     
     ref64 = torch_kernel(a64, b64)
     compiled_torch = torch.compile(torch_kernel)
     ref = compiled_torch(a, b)
 
     ckernel = RMSNormLinear2SM90(
-        tile_shape_mnk=(128, 256, 32),
-        epi_tile_mn=(128, 128),
+        tile_shape_mnk=(128, 256, 64),
+        epi_tile_mn=(128, 32),
         cluster_shape_mnk=(2, 1, 1),
         atom_layout_mn=(2, 1),
-        ab_stage=6,
+        ab_stage=3,
         epi_stage=2,
         is_persistent=True,
         gemm_n_prologue=0,
     )
+    ckernel_2 = RMSNormLinear1SM90(
+        tile_shape_mn=(128, 256), 
+        epi_tile_mn=(128, 32),
+        cluster_shape_mnk=(2, 1, 1), 
+        atom_layout_mn=(2, 1),
+        ab_stage=3,
+        reuse_ab=False,
+        is_persistent=True,
+        gemm_n_prologue=0,
+        eps=EPS)
     tensors = (a, b, c, EPS)
     compiled_cutedsl = compile_cutedsl(tensors, ckernel, False)
     compiled_cutedsl(*tensors)
     torch.cuda.synchronize()
 
+    if DO_OLD:
+        tensors_old = (a, b, c_old)
+        compiled_cutedsl_old = compile_cutedsl(tensors_old, ckernel_2, True)
+        compiled_cutedsl_old(*tensors_old, STREAM)
+        torch.cuda.synchronize()
+
     if not IS_NCU:
         ref_rmse = get_rmse(ref64, ref.to(htype))
         my_rmse = get_rmse(ref64, c.to(htype))
-        print(f'{ref_rmse=}, {my_rmse=}')
+        my_old_rmse = get_rmse(ref64, c_old.to(htype)) if DO_OLD else 'n/a'
+        print(f'{ref_rmse=}, {my_rmse=}, {my_old_rmse=}')
     
     if IS_SPEED:
         def cdsl_kernel(a_: torch.Tensor, b_: torch.Tensor):
             o = torch.empty(a_.shape[0], b_.shape[0], dtype=torch.bfloat16, device='cuda')
-            compiled_cutedsl(a_, b_, o)
+            compiled_cutedsl(a_, b_, o, EPS)
+            return o
+        
+        def cdsl_kernel_old(a_: torch.Tensor, b_: torch.Tensor):
+            o = torch.empty(a_.shape[0], b_.shape[0], dtype=torch.bfloat16, device='cuda')
+            compiled_cutedsl_old(a_, b_, o, STREAM)
             return o
         
         my_ms = do_bench(lambda: cdsl_kernel(a, b))
         time.sleep(2)
+        if DO_OLD:
+            my_old_ms = do_bench(lambda: cdsl_kernel_old(a, b))
+            time.sleep(2)
+        else:
+            my_old_ms = 'n/a'
         gemm_ms = do_bench(lambda: a @ b.t())
         time.sleep(2)
         torch_ms = do_bench(lambda: compiled_torch(a, b))
-        print(f'{my_ms=}, {torch_ms=}, {gemm_ms=}')
+        print(f'{my_ms=}, {my_old_ms=}, {torch_ms=}, {gemm_ms=}')
+        print(f'Mine : {my_ms} ({torch_ms / my_ms}x)')
+        print(f'Old  : {my_old_ms} ({torch_ms / my_ms if DO_OLD else "n/a"}x)')

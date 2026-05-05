@@ -41,6 +41,9 @@ def gemm(
     zero_init: cutlass.Constexpr[bool] = False,
     wg_wait: cutlass.Constexpr[int] = 0,
 ) -> None:
+    """
+    Should work with SS or RS
+    """
     warpgroup.fence()
     mma_atom = cute.make_mma_atom(tiled_mma.op)
     mma_atom.set(warpgroup.Field.ACCUMULATE, not zero_init)
@@ -83,6 +86,38 @@ def gemm_w_index(
     rA = tCrA if const_expr(A_idx is None) else tCrA[None, None, None, A_idx]
     rB = tCrB if const_expr(B_idx is None) else tCrB[None, None, None, B_idx]
     gemm(tiled_mma, acc, rA, rB, zero_init=zero_init, wg_wait=wg_wait)
+
+
+@cute.jit
+def accumulating_gemm_rs(
+    tidx: int,
+    tiled_mma: cute.TiledMma,
+    rA: cute.Tensor,
+    sB: cute.Tensor,
+    acc: cute.Tensor,
+    b_state: cutlass.pipeline.PipelineState | cutlass.Int32,
+    accumulate: bool,
+    wg_wait: int = 0,
+):
+    """
+    A should already be loaded and in registers, so no need to index
+    B is given the way that gemm_ss is.
+    """
+    b_idx = b_state
+    if cutlass.const_expr(isinstance(b_state, cutlass.pipeline.PipelineState)):
+        b_idx = b_state.index
+    thr_mma = tiled_mma.get_slice(tidx)
+    tSrB = tiled_mma.make_fragment_B(thr_mma.partition_B(sB))
+    gemm_w_index(
+        tiled_mma,
+        acc,
+        rA,
+        tSrB,
+        not accumulate,
+        A_idx=None,
+        B_idx=b_idx,
+        wg_wait=wg_wait,
+    )
 
 
 @cute.jit

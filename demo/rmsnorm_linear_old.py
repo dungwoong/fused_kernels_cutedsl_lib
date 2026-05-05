@@ -3,6 +3,7 @@ from typing import Callable, Tuple, Type
 import math
 import cuda.bindings.driver as cuda
 
+import time
 import torch
 from triton import runtime
 import functools
@@ -19,6 +20,7 @@ import cutlass.torch as cutlass_torch
 from cutlass.cute.runtime import from_dlpack
 import cutlass.utils.hopper_helpers as sm90_utils
 from cutedsl_kernels import RMSNormLinear1SM90
+from triton.testing import do_bench
 
 if __name__ == "__main__":
     print('Starting...')
@@ -106,8 +108,9 @@ if __name__ == "__main__":
         return a_rms @ b.t()
 
     if IS_SPEED:
-        my_ms = profile_ms(lambda: compiled_gemm(a_cute, b_cute, c_cute, current_stream))
-        other_ms = profile_ms(torch_gemm)
+        my_ms = do_bench(lambda: compiled_gemm(a_cute, b_cute, c_cute, current_stream))
+        time.sleep(2)
+        other_ms = do_bench(torch_gemm)
         print(f'{my_ms=}, {other_ms=}')
         my_flops, other_flops = get_tflops(my_ms), get_tflops(other_ms)
         print(f'{my_flops=}, {other_flops=}')

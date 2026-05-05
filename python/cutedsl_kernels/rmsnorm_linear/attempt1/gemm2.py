@@ -83,11 +83,10 @@ def make_A_reduction_tensor(tiled_mma: cute.TiledMma, tile_m: int, tile_n: int, 
 def row_sum_square(a: cute.Tensor, acc: cute.Tensor):
     a_mn = my_layout.make_acc_tensor_mn_view(a, False) # ((2, MMA_M), (2, V, MMA_N), ...) rows cols
     for r in cutlass.range_constexpr(cute.size(acc)):
-        a_row = a_mn[r, None].load()
-        init_val = acc[r]
+        a_row = a_mn[r, None].load().to(acc.element_type)
+        # for i in cutlass.range_constexpr(cute.size(a_row.shape)):
         for i in cutlass.range_constexpr(cute.size(a_row.shape)):
-            init_val = init_val + (a_row[i] * a_row[i])
-        acc[r] = init_val
+            acc[r] += (a_row[i] * a_row[i])
 
 @cute.jit
 def warp_sum_row_mma_layout(
@@ -117,8 +116,6 @@ def elemwise_rsqrt_plus_eps(row_reduce_regs: cute.TensorSSA, dim: int, epsilon: 
 @cute.jit
 def row_scale(acc: cute.Tensor, scaler: cute.Tensor):
     a_mn = my_layout.make_acc_tensor_mn_view(acc, False)
-    print(scaler)
-    print(a_mn)
     for r in cutlass.range_constexpr(cute.size(scaler)):
         a_mn[r, None].store(a_mn[r, None].load() * scaler[r])
 
@@ -339,9 +336,6 @@ class GemmSM90:
                 gA_mk = cute.local_tile(mA, cute.select(self.cta_tile_shape_mnk, [0, 2]), (tile_coord_mnk[0], None))
                 k_iters = cute.size(gA_mk, mode=[2]) # m, k, restK
 
-                # raw_ptr(0x0000147d89fffc40: f32, rmem, align<32>) o (2,1):(1,0)
-                # vs tensor<ptr<f32, rmem, align<32>> o (2,1):(1,0)>
-                # the problem is we're spilling to local mem because we're actually using too many registers
                 reduction_acc = make_A_reduction_tensor(tiled_mma, self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2], self.acc_dtype)
                 reduction_acc.fill(0.0)
 
@@ -423,15 +417,17 @@ class GemmSM90:
             epi_tile_shape, stride=(epi_tile_shape[1], 1)
         )
 
-        # NO WORK HAS BEEN DONE YET, do the epilogue for the sum
-        # reduction_acc.store(warp_sum_row_mma_layout(reduction_acc.load())) # NOTE this is a bit redundant
-        # reduction_acc.store(elemwise_rsqrt_plus_eps(reduction_acc.load(), self.k_dim, eps))
-        # row_scale(accumulators, reduction_acc)
+        # NO WORK HAS BEEN DONE YET, do the epilogue for the sum before storing out
+        reduction_acc.store(warp_sum_row_mma_layout(reduction_acc.load())) # NOTE this is a bit redundant
+        reduction_acc.store(elemwise_rsqrt_plus_eps(reduction_acc.load(), self.k_dim, eps))
+        row_scale(accumulators, reduction_acc)
 
         for epi_idx in cutlass.range_constexpr(epi_tile_num):
             for epi_v in cutlass.range_constexpr(size_tRS_rD):
                 # Take a slice of the accumulators
-                tRS_rD[epi_v] = tRS_rAcc[epi_idx * size_tRS_rD + epi_v]
+                idx = epi_idx * size_tRS_rD + epi_v
+                idx1 = (idx % 4) // 2 # HACK since we know the size
+                tRS_rD[epi_v] = tRS_rAcc[idx] # * reduction_acc[idx1]
             
             # Type conversion
             tRS_rD_out = cute.make_rmem_tensor_like(tRS_rD_layout, self.dtype)
@@ -510,15 +506,33 @@ class GemmSM90:
     def gemm_middle_loop(self, tidx: Int32, start_iter: Int32, end_iter: Int32, tiled_mma: cute.TiledMma, reduction_acc: cute.Tensor, accumulators: cute.Tensor, pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState, release_state: pipeline.PipelineState, sA: cute.Tensor, sB: cute.Tensor, accumulate_O: bool, wait_num: Int32):
         for _ in cutlass.range(start_iter, end_iter, unroll=1):
             pipe.consumer_wait(read_state, pipe.consumer_try_wait(read_state))
-            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators, read_state, read_state, accumulate_O, -1)
-            accumulate_O = True
-            a_regs = copy_a_wgmma(tidx, tiled_mma, sA[None, None, read_state.index], self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2], self.dtype)
+            a_regs = copy_a_wgmma(tidx, tiled_mma, sA[None, None, read_state.index], self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2], self.dtype) 
+            mma.accumulating_gemm_rs(tidx, tiled_mma, a_regs, sB, accumulators, read_state, accumulate_O, -1)
             row_sum_square(a_regs, reduction_acc)
+            # self.row_reduce_fused_accums(a_regs, reduction_acc)
+            accumulate_O = True
             cute.nvgpu.warpgroup.wait_group(0) # integrated into mma.op
             pipe.consumer_release(release_state)
             read_state.advance()
             release_state.advance()
         return read_state, release_state, accumulate_O, tiled_mma
+
+    @cute.jit
+    def row_reduce_fused_accums(self, mma_frag: cute.Tensor, accum: cute.Tensor):
+        """
+        I have no idea why, but this is much faster than the other PTX
+        """
+        # indices 1-8, divide by 2 and then mod 2
+        # mma_frag must be rank 3
+        ldm = cute.size(mma_frag, mode=[0])
+        nrows = cute.size(mma_frag, mode=[1])
+        ncols = cute.size(mma_frag, mode=[2])
+        for r in cutlass.range_constexpr(nrows):
+            for c in cutlass.range_constexpr(ncols):
+                for ldm_idx in cutlass.range_constexpr(ldm):
+                    casted = mma_frag[ldm_idx, r, c].to(self.acc_dtype)
+                    tmp = casted * casted
+                    accum[(ldm_idx // 2) % 2, r] += tmp
 
     @cute.jit
     def make_ab_pipeline(self, mbar_ptr: cute.Pointer, cta_layout_vmnk: cute.Layout):
@@ -606,7 +620,8 @@ class GemmSM90:
             self.b_layout.sm90_mma_major_mode(),
             self.acc_dtype,
             self.atom_layout_mnk,
-            tiler_mn=(64, self.cta_tile_shape_mnk[1] // self.atom_layout_mnk[1])
+            tiler_mn=(64, self.cta_tile_shape_mnk[1] // self.atom_layout_mnk[1]),
+            a_source=cute.nvgpu.warpgroup.OperandSource.RMEM
         )
         # mma_k = 16
         # self.cta_tile_shape_mnk = (self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1], mma_k * self.mma_inst_tile_k)

@@ -287,7 +287,6 @@ class GemmSM90:
             # the sum works but need to cast
             a_regs_mma_accum = cute.make_rmem_tensor_like(a_regs_mma.layout, self.acc_dtype)
             row_reduce_regs = cute.make_rmem_tensor(self.row_reduce_layout(a_regs_mma.layout), self.acc_dtype) # (2, nrows/16)
-            row_reduce_regs.fill(0)
             
             # plan: pass in a_regs0 then retile it to a_regs, and then copy and use a_regs0 for the mma since it's in the right layout(?)
 
@@ -300,6 +299,7 @@ class GemmSM90:
                 # You have to return this, it doesn't let you modify a var inside a diff scope
                 # SSA -- modifying a value means reassigning it, so you can't go into this fn scope and only modify the value there
                 # you have to return it
+                row_reduce_regs.fill(0)
                 ab_consumer_state, tiled_mma = self.consume_mainloop(k_iters, tiled_mma, accumulators, ab_pipeline, ab_consumer_state, tCrA, tCrB, tiled_copy_s2r, s2r_sA, a_regs, a_regs_mma, a_regs_mma_accum, row_reduce_regs)
 
                 # Epilogue ##################################################
