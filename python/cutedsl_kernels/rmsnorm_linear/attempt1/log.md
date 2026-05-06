@@ -65,3 +65,7 @@ ptxas info    : Compile time = 107.803 ms
 I could also test how precise bf16 sum then FP32 thread accum or something would be. I could do that first since it seems easier
 
 I could even first do the partial sum in BF16, then cast to FP32 then accumulate in FP32.
+
+- ok accumulating in BF16 instead of FP32 gives a boost from 91% TCore usage to 96%. So now we drop from 0.193ms to 0.182ms getting up to 1.11x and we're still below the torch RMSE(0.18414 --> 0.18438)
+- I tested having cluster shape as (1, 2, 1) for some reason that seems to increase performance. It might be because we want to load A to registers so it's better if there's less cluster sync there, but B is good for syncing. Either way, I could try the cluster plan
+- I can also try doing more precision stuff by occasionally accumulating into fp32 from bf16 instead of everytime. I'll try that first before doing the cluster idea LOL
