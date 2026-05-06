@@ -47,12 +47,7 @@ def printwg(x):
 
 class GemmSM90:
     """
-    - After stmatrix is done, dispatch next WGMMAs before doing the TMA store. Larger epi tile required.
-    - Also, we allow users to pass in a k dimension now. Seems like PyTorch kernels use 32 for higher tensor core usage around the epilogue.
-
-    If we use m128n256k64 tile size + 3 stages, we can fit 128x128x2 epilogue while staying under 228kB
-
-    PRECONDITION: n_prologue must be valid given the shapes of the inputs
+    Want to support horizontal GEMM 64x256
     """
     def __init__(
         self,
@@ -96,7 +91,7 @@ class GemmSM90:
         self.threads_per_cta = (self.mma_warpgroups + 1) * THREADS_PER_WG
         self.smem_capacity = cutlass.utils.get_smem_capacity_in_bytes("sm_90")
         self.ab_load_warp_id = self.mma_warpgroups * 4
-
+        
         # Registers
         self.num_regs_load, self.num_regs_mma = 40, 232
 
@@ -118,7 +113,7 @@ class GemmSM90:
         self.reuse_ab = reuse_ab
         self.epi_smem_layout_staged = None
         self.epi_smem_size = 0 # populate later
-        assert not (self.atom_layout_mnk[1] > 1) or self.epi_tile_mn[1] == self.cta_tile_shape_mnk[1], 'When atom layout n > 1, we need epi tile n = cta tile n'
+        # assert (self.atom_layout_mnk[1] == 1) or (self.epi_tile_mn[1] == self.cta_tile_shape_mnk[1]), f'When atom layout n > 1, we need epi tile n = cta tile n {self.epi_tile_mn[1]=}, {self.atom_layout_mnk[1]=}'
 
         # Persistent
         self.is_persistent = is_persistent
@@ -513,6 +508,17 @@ class GemmSM90:
             self.atom_layout_mnk,
             tiler_mn=(64, self.cta_tile_shape_mnk[1] // self.atom_layout_mnk[1])
         )
+        if cutlass.const_expr(self.atom_layout_mnk[1] > 1):
+            atom_n = self.atom_layout_mnk[1]
+            permutation_n = cute.make_ordered_layout(
+                (8, self.cta_tile_shape_mnk[1] // atom_n // 8, atom_n), order=(0, 2, 1)
+            )
+            self.tiled_mma = cute.make_tiled_mma(
+                cute.make_mma_atom(self.tiled_mma.op),
+                self.atom_layout_mnk,
+                permutation_mnk=(None, permutation_n, None)
+            )
+            print(self.tiled_mma)
         # mma_k = 16
         # self.cta_tile_shape_mnk = (self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1], mma_k * self.mma_inst_tile_k)
     

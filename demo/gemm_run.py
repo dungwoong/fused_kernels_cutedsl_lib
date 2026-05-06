@@ -1,6 +1,6 @@
 import torch
 from triton.testing import do_bench
-from cutedsl_kernels import Gemm4SM90
+from cutedsl_kernels import Gemm5SM90
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 import time
 
@@ -28,7 +28,20 @@ if __name__ == '__main__':
     c = torch.empty((m, n), dtype=torch.bfloat16).to('cuda')
     ref = a @ b.t()
 
-    gemm = Gemm4SM90(
+    # Multicast A matrix with cluster shape (1, 2)
+    # gemm = Gemm5SM90(
+    #     tile_shape_mnk=(256, 128, 32),
+    #     epi_tile_mn=(128, 128),
+    #     cluster_shape_mnk=(1, 2, 1),
+    #     atom_layout_mn=(2, 1),
+    #     ab_stage=6,
+    #     epi_stage=2,
+    #     is_persistent=True,
+    #     gemm_n_prologue=1,
+    # )
+
+    # Multicast B matrix with cluster shape (2, 1)
+    gemm = Gemm5SM90(
         tile_shape_mnk=(128, 256, 32),
         epi_tile_mn=(128, 128),
         cluster_shape_mnk=(2, 1, 1),
@@ -38,13 +51,26 @@ if __name__ == '__main__':
         is_persistent=True,
         gemm_n_prologue=1,
     )
+
+    # Horizontal tiles
+    # gemm = Gemm5SM90(
+    #     tile_shape_mnk=(64, 512, 32),
+    #     epi_tile_mn=(64, 64),
+    #     cluster_shape_mnk=(2, 1, 1),
+    #     atom_layout_mn=(1, 2),
+    #     ab_stage=5, # need lower stages cuz AB uses more SMEM
+    #     epi_stage=2,
+    #     is_persistent=True,
+    #     gemm_n_prologue=1,
+    # )
     compiled_gemm = compile_cutedsl((a, b, c), gemm, False)
     compiled_gemm(a, b, c)
     if not IS_NCU:
         print('All close:', torch.allclose(ref, c))
     if IS_DEBUG:
-        print(c)
-        print(ref)
+        # print(c)
+        # print(ref)
+        print((ref - c)[0, :512])
         n_incorrect = c.numel() - ((c - ref).abs() < 0.001).sum()
         print('n_incorrect :', n_incorrect)
         print('n_nonzero :', (c != 0).sum())

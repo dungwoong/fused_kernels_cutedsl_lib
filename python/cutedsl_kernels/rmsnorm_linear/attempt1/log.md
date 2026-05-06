@@ -52,6 +52,16 @@ ptxas info    : Compile time = 107.803 ms
 - I don't even know what I was thinking with this one, there's just barely a little more float computation vs tensor core so you get to 90% compute so all this additional sync is not good.
 - implementing ping-pong need to check the wgs are correct since attn had producer first
 
+## Horizontal
+- So each WG only needs to do half of the summation everytime, and then WGs will combine at the end.
+- We could try a horizontal bcast and cluster reduce but it might lead to unwanted syncs, I feel like that wouldn't be worth it.
+- To get the sum, you could have every thread sum what it needs or you could have one thread compute it and then shfl_sync. I'd say since warps are like SIMD I think we could just have every thread sum what it needs...?
+
 ## Split up the summation, use SMEM at the end
 - horizontal tile so each WG does half the sum
 - first, we should test whether GEMM is still performant like that.
+- It might not be good since horizontal tile is like 10% slower. We could try clusters
+
+I could also test how precise bf16 sum then FP32 thread accum or something would be. I could do that first since it seems easier
+
+I could even first do the partial sum in BF16, then cast to FP32 then accumulate in FP32.
