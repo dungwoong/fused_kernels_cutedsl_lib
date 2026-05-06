@@ -15,3 +15,13 @@
 
 - Separate pipeline for V didn't really work. Tensor cores are already full so separate pipeline doesn't do much, it can actually slow things down since more barrier synchronization.
 - If we have high arithmetic intensity, we could go with a ping-pong strategy to sacrifice some arithmetic intensity for epi/mainloop overlap
+
+What I will do in the short-term:
+- hold X in registers and do RS gemm(profile first)
+- Start dispatching a prologue? idk it's never helped before
+- ping-pong for low sizes.
+
+Ok first observations
+- no spills so that's good
+- if I remove the silu to just do Wx + Vx you immediately jump to 1.09x-1.11x speedup on 4096 2048 4096
+- I see add, div and mul stuff at the end. I think my silu is slow

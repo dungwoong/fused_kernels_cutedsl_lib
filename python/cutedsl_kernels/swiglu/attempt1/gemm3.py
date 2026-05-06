@@ -26,14 +26,7 @@ from .cdsl_fn_utils import convert_from_dlpack, make_fake_tensor
 from .activation import silu as fast_silu
 
 """
-Things I can try:
-- Each warpgroup does their own epilogue, so there's no sync needed. 
-  Then, whatever warpgroup finishes first could start on epilogue without waiting up.
-  Not sure how staged epilogue would work though...
-- We dispatch prologue MMAs after the last TMA is done.
-
-These methods are orthogonal since dispatching prologue MMAs requires all consumer warpgroups to be ready.
-I'd lean towards trying the second one first.
+Try ldmatrix into registers and then mul with ldmatrix
 """
 
 THREADS_PER_WG = 128
@@ -60,8 +53,35 @@ def printwg(x):
         if tidx%128 == 0 and bidx == 0 and bidy == 0 and bidz == 0:
             cute.printf(x)
 
+@cute.jit
+def copy_a_wgmma(tidx: cutlass.Int32, tiled_mma: cute.TiledMma, sA: cute.Tensor, tile_m: int, tile_n: int, dtype: Type[cutlass.Numeric]):
+    """
+    sA should be ONLY a single stage(2D tensor)
+    Returns the copy in an mma-ready format
+    
+    no trans ldmatrix
+    """
+    copy_atom_A = cute.make_copy_atom(
+        cute.nvgpu.warp.LdMatrix8x8x16bOp(
+            False,
+            4,
+        ),
+        dtype,
+    )
+    tiled_copy_s2r = cute.make_tiled_copy_A(copy_atom_A, tiled_mma)
+    thr_copy_s2r = tiled_copy_s2r.get_slice(tidx)
+    s2r_sA = thr_copy_s2r.partition_S(sA)
+    s2r_r_shape = tiled_mma.partition_shape_A(
+        (tile_m, tile_n)
+    )
+    a_regs_mma = cute.make_rmem_tensor(s2r_r_shape, dtype)
+    a_regs = thr_copy_s2r.retile(a_regs_mma)
+    cute.copy(tiled_copy_s2r, s2r_sA, a_regs)
+    return a_regs_mma
+
 
 def silu_f32(x: cutlass.Float32) -> cutlass.Float32:
+    """This SiLU is slow"""
     L2E = math.log2(math.e)
     exp_neg_x = cute.math.exp2(x * -1.0 * L2E, fastmath=True)
     return x / (1.0 + exp_neg_x)
@@ -80,6 +100,7 @@ class GemmSM90:
         is_persistent: bool = False,
         gemm_n_prologue: int = 0,
         ):
+        assert gemm_n_prologue == 0, "Unsupported"
         self.acc_dtype = cutlass.Float32
         self.raster_order = raster_order
         self.scheduler_group_size = Int32(8)
@@ -457,8 +478,9 @@ class GemmSM90:
         """
         for _ in cutlass.range(start_iter, end_iter, unroll=1):
             pipe.consumer_wait(read_state, pipe.consumer_try_wait(read_state))
-            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB, accumulators_ab, read_state, read_state, accumulate_O, -1)
-            mma.accumulating_gemm_ss(tidx, tiled_mma, sA, sB1, accumulators_ab1, read_state, read_state, accumulate_O, -1)
+            a_regs = copy_a_wgmma(tidx, tiled_mma, sA[None, None, read_state.index], self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2], self.a_dtype)
+            mma.accumulating_gemm_rs(tidx, tiled_mma, a_regs, sB, accumulators_ab, read_state, accumulate_O, -1)
+            mma.accumulating_gemm_rs(tidx, tiled_mma, a_regs, sB1, accumulators_ab1, read_state, accumulate_O, -1)
             accumulate_O = True
             cute.nvgpu.warpgroup.wait_group(wait_amount)
             pipe.consumer_release(release_state)
@@ -650,7 +672,8 @@ class GemmSM90:
             self.b_layout.sm90_mma_major_mode(),
             self.acc_dtype,
             self.atom_layout_mnk,
-            tiler_mn=(64, self.cta_tile_shape_mnk[1] // self.atom_layout_mnk[1])
+            tiler_mn=(64, self.cta_tile_shape_mnk[1] // self.atom_layout_mnk[1]),
+            a_source=cute.nvgpu.warpgroup.OperandSource.RMEM,
         )
         # mma_k = 16
         # mma_inst_tile_k = 4
