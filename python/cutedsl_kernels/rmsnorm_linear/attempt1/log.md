@@ -69,3 +69,10 @@ I could even first do the partial sum in BF16, then cast to FP32 then accumulate
 - ok accumulating in BF16 instead of FP32 gives a boost from 91% TCore usage to 96%. So now we drop from 0.193ms to 0.182ms getting up to 1.11x and we're still below the torch RMSE(0.18414 --> 0.18438)
 - I tested having cluster shape as (1, 2, 1) for some reason that seems to increase performance. It might be because we want to load A to registers so it's better if there's less cluster sync there, but B is good for syncing. Either way, I could try the cluster plan
 - I can also try doing more precision stuff by occasionally accumulating into fp32 from bf16 instead of everytime. I'll try that first before doing the cluster idea LOL
+ - ok that didn't work. I think I can stop here. I'm getting 0.187 and gemm_ms is 0.183 so I'm almost at the max attainable speedup to begin with
+ - Ok so we're getting like 95% speed on GEMM, but no more RMS. I can measure `gemm_ms / my_ms` and it's like 0.97 0.98 ish
+ - I think less duplicated work = better so on a down proj it's goated like m32768n4096. Something like m8192n2048k4096 gets 99% of gemm, 1.22x speedup
+ - If you have a skinny N e.g. 1024 you can get like 1.49 e.g. m8192n1024k4096
+ - 8192 1024 2048 you'll get 1.53x if you really wanna pad the numbers
+
+I think I could totally try clusters out

@@ -109,3 +109,5 @@ if __name__ == '__main__':
         print(f'{my_ms=}, {my_old_ms=}, {torch_ms=}, {gemm_ms=}')
         print(f'Mine : {my_ms} ({torch_ms / my_ms}x)')
         print(f'Old  : {my_old_ms} ({torch_ms / my_old_ms if DO_OLD else "n/a"}x)')
+        print(f'Max  : {gemm_ms} ({torch_ms / gemm_ms})')
+        print(f"Gemm : ({gemm_ms / my_ms})")

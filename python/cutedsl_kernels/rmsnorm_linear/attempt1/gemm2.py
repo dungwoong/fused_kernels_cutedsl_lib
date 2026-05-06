@@ -149,7 +149,6 @@ def row_scale(acc: cute.Tensor, scaler: cute.Tensor):
 
 
 
-
 class GemmSM90:
     """
     - Redo with new gemm API
@@ -535,7 +534,7 @@ class GemmSM90:
     
     @cute.jit
     def gemm_middle_loop(self, tidx: Int32, start_iter: Int32, end_iter: Int32, tiled_mma: cute.TiledMma, reduction_acc: cute.Tensor, accumulators: cute.Tensor, pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState, release_state: pipeline.PipelineState, sA: cute.Tensor, sB: cute.Tensor, accumulate_O: bool, wait_num: Int32):
-        for _ in cutlass.range(start_iter, end_iter, unroll=1):
+        for k in cutlass.range(start_iter, end_iter, unroll=1):
             pipe.consumer_wait(read_state, pipe.consumer_try_wait(read_state))
             a_regs = copy_a_wgmma(tidx, tiled_mma, sA[None, None, read_state.index], self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2], self.dtype)
             self.inter_wg_barrier()
