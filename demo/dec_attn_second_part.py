@@ -27,7 +27,7 @@ if __name__ == '__main__':
     D = 128
     N = 4096
     P = 2048
-    H = 128
+    H = 32
     multiplier = D ** -0.5
 
     torch.manual_seed(42)
@@ -52,7 +52,7 @@ if __name__ == '__main__':
         pre_softmax = torch.exp2(P)
         o = (pre_softmax @ Vt_)
         rowsum = torch.sum(pre_softmax, dim=-1)[..., None]
-        return o * torch.reciprocal(rowsum)
+        return o / rowsum
     ref64 = torch_fn(Q64, K64, Vt64)
     ref = torch_fn(Q, K, Vt)
     # ref = Q @ K[:, -128:, :].transpose(1, 2)
@@ -88,4 +88,12 @@ if __name__ == '__main__':
         time.sleep(2)
         torch_ms = do_bench(lambda: compiled_torch(Q, K, Vt))
         print(f'{my_ms=}, {torch_ms=} ({torch_ms/my_ms})')
+
+        X = torch.randn((M, N), dtype=torch.bfloat16, device='cuda')
+        Wqkv = torch.randn((N, N), dtype=torch.bfloat16, device='cuda')
+        time.sleep(2)
+        matmul_ms = do_bench(lambda: X @ Wqkv)
+        print(f'{matmul_ms=}')
+        print('Total speedup')
+        print(f'{(matmul_ms + torch_ms) / (matmul_ms + my_ms)}')
 

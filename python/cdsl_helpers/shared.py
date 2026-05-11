@@ -40,12 +40,14 @@ def memrange(dtype, smem_layout, align):
     return cute.struct.Align[cute.struct.MemRange[dtype, cute.cosize(smem_layout)], align]
 
 
-def get_tma_tensor_and_atom(tG, shared_layout, rows, cols):
+def get_tma_tensor_and_atom(tG, shared_layout, rows, cols, num_mcast=1):
+    op = cute.nvgpu.cpasync.CopyBulkTensorTileG2SOp() if num_mcast == 1 else cute.nvgpu.cpasync.CopyBulkTensorTileG2SMulticastOp()
     return cute.nvgpu.cpasync.make_tiled_tma_atom(
-        cute.nvgpu.cpasync.CopyBulkTensorTileG2SOp(),
+        op,
         tG,
         cute.select(shared_layout, mode=[0, 1]),
         (rows, cols),
+        num_multicast=num_mcast,
     )
 
 

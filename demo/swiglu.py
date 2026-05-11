@@ -102,6 +102,7 @@ if __name__ == '__main__':
         my_ms = do_bench(lambda: cdsl_func(a, b, b1))
         time.sleep(2)
         my_ms_ss = do_bench(lambda: cdsl_func_ss(a, b, b1))
+        time.sleep(2)
         other_ms = do_bench(lambda: torch_func(a, bb1))
         time.sleep(2)
         other_ms_slow = do_bench(lambda: torch_func_slow(a, b, b1))
