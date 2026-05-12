@@ -5,6 +5,11 @@ import cutlass
 from cutlass import cute, pipeline
 from cdsl_helpers import shared, mma, pipeline as my_pipeline, layout as my_layout, store as my_store
 
+"""
+Tried to do a transpose for the gemm
+That is not a real thing, you can only change col-major to a row-major you don't unlock new mnk shapes lol.
+"""
+
 @cute.jit
 def print0(x):
     tidx, _, _ = cute.arch.thread_idx()
