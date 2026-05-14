@@ -59,7 +59,10 @@ if __name__ == '__main__':
         # print(c)
         torch.cuda.synchronize()
 
-        
+        @torch.compile
+        def matmul(a, b):
+            return a @ b.t()
+
         # NOTE I had this as finished = x.sum(...) and torch was optimizing out the entire op
         @torch.compile
         def combine(x):
@@ -87,7 +90,7 @@ if __name__ == '__main__':
 
             my_ms = do_bench(lambda: my_fn(a, b))
             time.sleep(2)
-            torch_ms = do_bench(lambda: a @ b.t())
+            torch_ms = do_bench(lambda: matmul(a, b))
             time.sleep(2)
             combine_ms = do_bench(lambda: compiled_reduce(c, o))
             combine_ms_torch = do_bench(lambda: combine(c))

@@ -25,9 +25,10 @@ if __name__ == '__main__':
 
     M = 16
     D = 128
-    N = 4096
-    P = 2048
+    P = 16384
     H = 32
+    N = H * D
+    print(f'{N=}')
     multiplier = D ** -0.5
 
     torch.manual_seed(42)
@@ -74,11 +75,19 @@ if __name__ == '__main__':
     # print(O[0, 0, :4])
     
     # print(O[0, :16, :16])
+    def torch_sdpa(q, k, v):
+        # BHSD
+        o = torch.nn.functional.scaled_dot_product_attention(
+            q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)
+        )
+        return o
+    o_sdpa = torch_sdpa(Q, K, Vt)
 
     if not IS_NCU:
         ref_rmse = get_rmse(ref64, ref.to(ref64.dtype))
         my_rmse = get_rmse(ref64, O.to(ref64.dtype))
-        print(f'{ref_rmse=}, {my_rmse=}')
+        sdpa_rmse = get_rmse(ref64, o_sdpa.to(ref64.dtype))
+        print(f'{ref_rmse=}, {my_rmse=}, {sdpa_rmse=}')
         # print(torch.sum(Q @ K.transpose(1, 2), axis=-1))
         print('max err', (ref - O).max().item())
         allclose = torch.allclose(ref, O)
@@ -87,7 +96,10 @@ if __name__ == '__main__':
         my_ms = do_bench(lambda: compiled_attn(*tensors))
         time.sleep(2)
         torch_ms = do_bench(lambda: compiled_torch(Q, K, Vt))
+        time.sleep(2)
+        sdpa_ms = do_bench(lambda: torch_sdpa(Q, K, Vt))
         print(f'{my_ms=}, {torch_ms=} ({torch_ms/my_ms})')
+        print(f'{sdpa_ms=}, ({sdpa_ms / my_ms})')
 
         X = torch.randn((M, N), dtype=torch.bfloat16, device='cuda')
         Wqkv = torch.randn((N, N), dtype=torch.bfloat16, device='cuda')
@@ -96,4 +108,9 @@ if __name__ == '__main__':
         print(f'{matmul_ms=}')
         print('Total speedup')
         print(f'{(matmul_ms + torch_ms) / (matmul_ms + my_ms)}')
+        # 1024 0.01660434291032808
+        # 2048 0.025651082584480626
+        # 4096 0.04292608000338077
+        # 8192 0.07421387785247394
+        # 16384 0.13953652748694786
 
