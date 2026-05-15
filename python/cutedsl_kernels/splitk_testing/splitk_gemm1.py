@@ -68,6 +68,7 @@ class Kernel:
     @cute.jit
     def __call__(self, mA: cute.Tensor, mB: cute.Tensor, mO: cute.Tensor):
         # mO is [row, col, splits] but torch shape is [row, splits, col]
+        # I'm pretty sure this above comment is outdated now.
         mO = my_layout.select(mO, [0, 2, 1])
         sA_layout = shared.get_smem_layout_row_major(self.dtype, self.m, self.k, self.stages)
         sB_layout = shared.get_smem_layout_row_major(self.dtype, self.n, self.k, self.stages)

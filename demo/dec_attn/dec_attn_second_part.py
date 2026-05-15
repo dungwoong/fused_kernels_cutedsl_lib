@@ -18,6 +18,7 @@ def get_rmse(ref: torch.Tensor, o: torch.Tensor):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument("p", type=int)
     parser.add_argument("--speed", action="store_true")
     args = parser.parse_args()
     IS_NCU = not args.speed # ncu doesn't accept -- I think
@@ -25,7 +26,7 @@ if __name__ == '__main__':
 
     M = 16
     D = 128
-    P = 1024
+    P = args.p
     H = 32
     N = H * D
     print(f'{N=}')

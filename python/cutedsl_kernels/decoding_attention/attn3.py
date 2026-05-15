@@ -13,10 +13,10 @@ def print0(x):
     tidx, _, _ = cute.arch.thread_idx()
     bidx, bidy, bidz = cute.arch.block_idx()
     if cutlass.const_expr(isinstance(x, cute.TensorSSA)):
-        if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
+        if tidx == 2 and bidx == 0 and bidy == 0 and bidz == 0:
             cute.print_tensor(x)
     else:
-        if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
+        if tidx == 2 and bidx == 0 and bidy == 0 and bidz == 0:
             cute.printf(x)
 
 class NamedBarrierFwd(enum.IntEnum):
@@ -176,6 +176,13 @@ def _store_t(src: cute.Tensor, dst: cute.Tensor, tiled_gemm: cute.TiledMma, tidx
     r2s_r = thr_copy_r2s.retile(src)
     cute.copy(copy_atom, r2s_r, r2s_s)
 
+@cute.jit # no 32-bit stmatrix
+def _store_t_fp32(src: cute.Tensor, dst: cute.Tensor, tiled_gemm: cute.TiledMma, tidx):
+    dst_t = transpose_view(dst)
+    thr_mma = tiled_gemm.get_slice(tidx)
+    tCgC = thr_mma.partition_C(dst_t)
+    cute.autovec_copy(src, tCgC)
+
 @cute.jit
 def _tma_store_single(src: cute.Tensor, dst: cute.Tensor, tile_m: int, tile_n: int, idx_m: int, idx_n: int, s2g_atom: cute.CopyAtom):
     gO = cute.local_tile(dst, (tile_m, tile_n), (idx_m, idx_n))
@@ -184,20 +191,23 @@ def _tma_store_single(src: cute.Tensor, dst: cute.Tensor, tile_m: int, tile_n: i
     )
     store_O()
 
-class Kernel:
+class KernelSplitKGMEM:
     """
-    Assume:
-    - dim_q = dim_v so qk_mnk defines the entire operation
-    - no multicasting. The triton kernel didn't have it either.
+    - implement splitk
+    - remove redundant persistent param
     
-    No SplitK
+    Implement SplitK.
+    Future implementation can use cluster to perform the reductions and each SM can output a smaller portion of the result
+
+    Consumers store partial results into a (H, M, S, D) output where S is the number of splits
+    And also store partial sums into (H, S, M) output
     """
     def __init__(
         self,
         qk_mnk: Tuple[int, int, int],
         stages: int,
         p_stages: int,
-        is_persistent: bool
+        k_splits: int,
     ):
         self.dtype = cutlass.BFloat16
         self.acc_dtype = cutlass.Float32
@@ -209,20 +219,21 @@ class Kernel:
         self.producer_regs = 40
         self.nconsumer_warps = None
 
-        self.is_persistent = is_persistent
+        self.k_splits = k_splits
+        self.is_persistent = False
     
     @cute.jit
-    def __call__(self, mQ: cute.Tensor, mK: cute.Tensor, mV: cute.Tensor, mO: cute.Tensor, softmax_scale: cutlass.Float32):
+    def __call__(self, mQ: cute.Tensor, mK: cute.Tensor, mV: cute.Tensor, mO: cute.Tensor, mSum: cute.Tensor, softmax_scale: cutlass.Float32):
         """
         e.g. mQ is (nheads, 16, 128)
              mK, mV are (nheads, 1024, 128)
-             mO is (nheads, 16, 128)
+             mO is (nheads, 16, SPLITS, 128)
         """
         # seqlen, dim, heads
         mQ = my_layout.select(mQ, [1, 2, 0])
         mK = my_layout.select(mK, [1, 2, 0])
         mV = my_layout.select(mV, [1, 2, 0])
-        mO = my_layout.select(mO, [1, 2, 0])
+        mO = my_layout.select(mO, [1, 3, 0, 2])
 
         qk_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.tile_k, self.seq_q)
         pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q)
@@ -239,7 +250,7 @@ class Kernel:
         # but WGMMA should support A as mn-major according to PTX ISA...
         sP_layout = shared.get_smem_layout_row_major(self.dtype, self.seq_q, self.tile_k, self.p_stages)
         sV_layout = shared.get_smem_layout_row_major(self.dtype, self.dim, self.tile_k, self.stages)
-        sO_layout = shared.get_smem_layout_row_major(self.dtype, self.seq_q, self.dim, 1)
+        sO_layout = shared.get_smem_layout_row_major(self.acc_dtype, self.seq_q, self.dim, 1)
         sSum_layout = cute.make_layout((self.seq_q, self.nconsumer_warps)) # length, num_warps
 
         mQ_g2s_atom, mQ_g2s_tensor = shared.get_tma_tensor_and_atom(mQ, sQ_layout, self.seq_q, self.dim)
@@ -248,32 +259,31 @@ class Kernel:
         mO_s2g_atom, mO_s2g_tensor = get_epi_tensor_atom(mO, sO_layout, (self.seq_q, self.dim))
 
         nheads = mK.shape[2]
-        scheduler_params = attn_scheduler.HeadAttnTileScheduler.to_underlying_arguments(
-            attn_scheduler.HeadAttnTileSchedulerArguments.create(nheads, self.is_persistent)
-        )
-        grid = attn_scheduler.HeadAttnTileScheduler.get_grid_shape(scheduler_params, 132)
+        grid = [self.k_splits, nheads, 1]
         # KERNEL LAUNCH
         softmax_scale_log2 = softmax_scale * math.log2(math.e)
 
         self.kernel(
-            scheduler_params, softmax_scale_log2,
+            softmax_scale_log2,
             sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout, sSum_layout,
             mQ_g2s_atom, mQ_g2s_tensor,
             mK_g2s_atom, mK_g2s_tensor,
             mV_g2s_atom, mV_g2s_tensor,
             mO_s2g_atom, mO_s2g_tensor,
+            mSum,
             qk_gemm, pv_gemm,
         ).launch(grid=grid, block=[(self.nconsumer_warps + 4) * cute.arch.WARP_SIZE])
     
     @cute.kernel
     def kernel(
         self,
-        scheduler_params, softmax_scale_log2,
+        softmax_scale_log2,
         sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout, sSum_layout,
         mQ_g2s_atom, mQ, # TMA tensor
         mK_g2s_atom, mK,
         mV_g2s_atom, mV,
         mO_s2g_atom, mO,
+        mSum,
         qk_gemm, pv_gemm,
         ):
         """
@@ -293,6 +303,7 @@ class Kernel:
         """
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         tidx, _, _ = cute.arch.thread_idx()
+        k_idx, head_idx, _ = cute.arch.block_idx()
 
         ss_t, bars_t = self._shared_cls(sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout, sSum_layout)
         s_alloc = cutlass.utils.SmemAllocator()
@@ -325,7 +336,8 @@ class Kernel:
             mcast_size=1,
             cta_layout_vmnk=None
         )
-        scheduler = attn_scheduler.HeadAttnTileScheduler.create(scheduler_params)
+
+        # TODO remove scheduler from this
         k_iters = cute.size(mK, mode=[0]) // self.tile_k
         if (warp_idx < self.nconsumer_warps): # Consumer
             cute.arch.setmaxregister_increase(self.consumer_regs)
@@ -333,63 +345,68 @@ class Kernel:
             state_v = pipeline.make_pipeline_state(pipeline.PipelineUserType.Consumer, self.stages)
             
             acc_o = mma.get_acc(pv_gemm, self.dim, self.seq_q, self.acc_dtype)
-            work_tile = scheduler.initial_work_tile_info()
-            if work_tile.is_valid_tile:
-                tile_coord = work_tile.tile_idx
-                head_idx = tile_coord[0]
 
-                acc_sum = get_colsum_init_16(self.acc_dtype)
-                acc_sum.fill(0.0) # NOTE we could do is_first but this is easier
-                accumulate_O = False
-                for k in cutlass.range(k_iters, unroll=1):
-                    pipe_k.consumer_wait(state_k, pipe_k.consumer_try_wait(state_k))
-                    acc_p = mma.single_gemm_ss(tidx, self.tile_k, self.seq_q, qk_gemm, sK, sQ, state_k, 0)
-                    pipe_k.consumer_release(state_k)
+            # head_idx is populated
+            acc_sum = get_colsum_init_16(self.acc_dtype)
+            acc_sum.fill(0.0) # NOTE we could do is_first but this is easier
+            accumulate_O = False
+            for k in cutlass.range(k_idx, k_iters, self.k_splits, unroll=1):
+                pipe_k.consumer_wait(state_k, pipe_k.consumer_try_wait(state_k))
+                acc_p = mma.single_gemm_ss(tidx, self.tile_k, self.seq_q, qk_gemm, sK, sQ, state_k, 0)
+                pipe_k.consumer_release(state_k)
 
-                    scale_exp(acc_p, softmax_scale_log2)
-                    
-                    # Do the processing, and sum potentially
-                    colsum_16(acc_p, acc_sum, is_first=False)
-
-                    acc_p_16 = cute.make_fragment_like(acc_p, self.dtype)
-                    acc_p_16.store(acc_p.load().to(self.dtype))
-                    _store_t(acc_p_16, sP[None, None, 0], qk_gemm, tidx, self.dtype)
-                    cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
-                    cute.arch.barrier(barrier_id=NamedBarrierFwd.WG_Sync, number_of_threads=(self.nconsumer_warps * cute.arch.WARP_SIZE))
-                    
-                    # sP is (16, 128) P, I verified
-                    pipe_v.consumer_wait(state_v, pipe_v.consumer_try_wait(state_v))
-
-                    # this should be Vt Pt = (PV)t
-                    mma.accumulating_gemm_ss(tidx, pv_gemm, sV, sP, acc_o, state_v, 0, accumulate_O, 0)
-                    accumulate_O = True
-                    pipe_v.consumer_release(state_v)
-                    state_k.advance()
-                    state_v.advance()
+                scale_exp(acc_p, softmax_scale_log2)
                 
-                # print0(acc_sum)
-                warp_sum = warp_sum_column(acc_sum.load())
-                # print0(warp_sum)
+                # Do the processing, and sum potentially
+                colsum_16(acc_p, acc_sum, is_first=False)
 
-                # TODO this is causing stack frame spills(32B)
-                store_partial_sums(warp_sum, sSum, self.nconsumer_warps * cute.arch.WARP_SIZE)
-                col_sum_needed = reduce_block_col_sum(sSum, self.acc_dtype)
-                col_scale(acc_o, col_sum_needed)
-
-                acc_o_16 = cute.make_fragment_like(acc_o, self.dtype)
-                acc_o_16.store(acc_o.load().to(self.dtype))
-
-                # seq_q, dim
-                _store_t(acc_o_16, sO[None, None, 0], pv_gemm, tidx, self.dtype)
+                acc_p_16 = cute.make_fragment_like(acc_p, self.dtype)
+                acc_p_16.store(acc_p.load().to(self.dtype))
+                _store_t(acc_p_16, sP[None, None, 0], qk_gemm, tidx, self.dtype)
                 cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
-                cute.arch.barrier_arrive(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * cute.arch.WARP_SIZE)
-                # print0(sP[None, None, 0])
-                if warp_idx == 0:
-                    cute.arch.barrier(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * cute.arch.WARP_SIZE)
-                    curr_o = mO[None, None, head_idx]
-                    _tma_store_single(sO[None, None, 0], curr_o, self.seq_q, self.dim, 0, 0, mO_s2g_atom)
-                    cute.arch.cp_async_bulk_commit_group()
-                    cute.arch.cp_async_bulk_wait_group(0, read=True)
+                cute.arch.barrier(barrier_id=NamedBarrierFwd.WG_Sync, number_of_threads=(self.nconsumer_warps * cute.arch.WARP_SIZE))
+                
+                # sP is (16, 128) P, I verified
+                pipe_v.consumer_wait(state_v, pipe_v.consumer_try_wait(state_v))
+
+                # this should be Vt Pt = (PV)t
+                mma.accumulating_gemm_ss(tidx, pv_gemm, sV, sP, acc_o, state_v, 0, accumulate_O, 0)
+                accumulate_O = True
+                pipe_v.consumer_release(state_v)
+                state_k.advance()
+                state_v.advance()
+            
+            # print0(acc_sum)
+            warp_sum = warp_sum_column(acc_sum.load())
+            # print0(warp_sum)
+
+            # TODO this is causing stack frame spills(32B)
+            store_partial_sums(warp_sum, sSum, self.nconsumer_warps * cute.arch.WARP_SIZE)
+            col_sum_needed = reduce_block_col_sum(sSum, self.acc_dtype)
+            # col_scale(acc_o, col_sum_needed)
+
+            acc_o_16 = cute.make_fragment_like(acc_o, self.dtype)
+            acc_o_16.store(acc_o.load().to(self.dtype))
+
+            # seq_q, dim
+            _store_t_fp32(acc_o, sO[None, None, 0], pv_gemm, tidx)
+            # _store_t(acc_o_16, sO[None, None, 0], pv_gemm, tidx, self.dtype)
+            cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
+            cute.arch.barrier_arrive(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * cute.arch.WARP_SIZE)
+            # print0(sP[None, None, 0])
+
+            # Only one warp needs to do the store, and only the first 8 threads need to too btw
+            if tidx < 8:
+                curr_osum = mSum[head_idx, k_idx, None]
+                local_osum = cute.local_tile(curr_osum, (2,), (tidx,))
+                local_col_sum = cute.local_tile(col_sum_needed, (2,), (tidx // 4,))
+                cute.autovec_copy(local_col_sum, local_osum)
+            if warp_idx == 0:
+                cute.arch.barrier(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * cute.arch.WARP_SIZE)
+                curr_o = mO[None, None, head_idx, k_idx]
+                _tma_store_single(sO[None, None, 0], curr_o, self.seq_q, self.dim, 0, 0, mO_s2g_atom)
+                cute.arch.cp_async_bulk_commit_group()
+                cute.arch.cp_async_bulk_wait_group(0, read=True)
 
         if (warp_idx >= self.nconsumer_warps): # Producer
             cute.arch.setmaxregister_decrease(self.producer_regs)
@@ -397,34 +414,32 @@ class Kernel:
                 state_k = pipeline.make_pipeline_state(pipeline.PipelineUserType.Producer, self.stages)
                 state_v = pipeline.make_pipeline_state(pipeline.PipelineUserType.Producer, self.stages)
 
-                work_tile = scheduler.initial_work_tile_info()
-                if work_tile.is_valid_tile:
-                    tile_coord = work_tile.tile_idx
-                    head_idx = tile_coord[0]
-                    q_curr = mQ[None, None, head_idx]
-                    k_curr = mK[None, None, head_idx] # seqlen, dim
-                    v_curr = mV[None, None, head_idx]
-                    
-                    # Load Q and first K
-                    pipe_k.producer_acquire(state_k, pipe_k.producer_try_acquire(state_k), extra_tx_count=q_bytes)
-                    # load q
-                    shared.tma_copy(mQ_g2s_atom, q_curr, sQ, self.seq_q, self.dim, 0, 0, pipe_k, state_k)
-                    # load k[0]
-                    shared.tma_copy(mK_g2s_atom, k_curr, sK, self.tile_k, self.dim, 0, 0, pipe_k, state_k)
-                    # load v[0]
+                q_curr = mQ[None, None, head_idx]
+                k_curr = mK[None, None, head_idx] # seqlen, dim
+                v_curr = mV[None, None, head_idx]
+                
+                # Load Q and first K
+                pipe_k.producer_acquire(state_k, pipe_k.producer_try_acquire(state_k), extra_tx_count=q_bytes)
+                # load q
+                shared.tma_copy(mQ_g2s_atom, q_curr, sQ, self.seq_q, self.dim, 0, 0, pipe_k, state_k)
+                # load k[0]
+                shared.tma_copy(mK_g2s_atom, k_curr, sK, self.tile_k, self.dim, k_idx, 0, pipe_k, state_k)
+                # load v[0]
+                pipe_v.producer_acquire(state_v, pipe_v.producer_try_acquire(state_v))
+                shared.tma_copy(mV_g2s_atom, v_curr, sV, self.dim, self.tile_k, 0, k_idx, pipe_v, state_v)
+                state_k.advance()
+                state_v.advance()
+                for k in cutlass.range(k_idx + self.k_splits, k_iters, self.k_splits, unroll=1):
+                    # load k[k]
+                    pipe_k.producer_acquire(state_k, pipe_k.producer_try_acquire(state_k))
+                    shared.tma_copy(mK_g2s_atom, k_curr, sK, self.tile_k, self.dim, k, 0, pipe_k, state_k)
+                    # load v[k]
                     pipe_v.producer_acquire(state_v, pipe_v.producer_try_acquire(state_v))
-                    shared.tma_copy(mV_g2s_atom, v_curr, sV, self.dim, self.tile_k, 0, 0, pipe_v, state_v)
+                    shared.tma_copy(mV_g2s_atom, v_curr, sV, self.dim, self.tile_k, 0, k, pipe_v, state_v)
                     state_k.advance()
                     state_v.advance()
-                    for k in cutlass.range(1, k_iters, unroll=1):
-                        # load k[k]
-                        pipe_k.producer_acquire(state_k, pipe_k.producer_try_acquire(state_k))
-                        shared.tma_copy(mK_g2s_atom, k_curr, sK, self.tile_k, self.dim, k, 0, pipe_k, state_k)
-                        # load v[k]
-                        pipe_v.producer_acquire(state_v, pipe_v.producer_try_acquire(state_v))
-                        shared.tma_copy(mV_g2s_atom, v_curr, sV, self.dim, self.tile_k, 0, k, pipe_v, state_v)
-                        state_k.advance()
-                        state_v.advance()
+                pipe_k.producer_tail(state_k)
+                pipe_v.producer_tail(state_v)
     
     def _shared_cls(self, sQ_layout, sK_layout, sV_layout, sP_layout, sO_layout, sSum_layout):
         SharedStorage = type("SS", (), dict())
@@ -433,7 +448,7 @@ class Kernel:
             ('sK_ptr', shared.memrange(self.dtype, sK_layout, 1024)),
             ('sV_ptr', shared.memrange(self.dtype, sV_layout, 1024)),
             ('sP_ptr', shared.memrange(self.dtype, sP_layout, 1024)),
-            ('sO_ptr', shared.memrange(self.dtype, sO_layout, 1024)),
+            ('sO_ptr', shared.memrange(self.acc_dtype, sO_layout, 1024)),
             ('sum_buf', shared.memrange(self.acc_dtype, sSum_layout, 1024)),
         ]
         for k, v in items:
@@ -447,3 +462,95 @@ class Kernel:
         for k, v in items:
             BarrierStorage.__annotations__[k] = v
         return cute.struct(SharedStorage), cute.struct(BarrierStorage)
+
+
+class ReduceDowncastKernel:
+    """
+    n is full 128, so warps can do (1, 128)
+    No need to tile m, since 128 is enough to split up among the entire warp
+    
+    Threads load in parts of the sum,
+    Warps load in parts of the tile, do the div and then save it
+    """
+    def __init__(
+        self, n=128, splits=2
+    ):
+        self.n = n
+        self.thread_numel = n // 32
+        self.dtype = cutlass.Float32
+        self.out_dtype = cutlass.BFloat16
+        self.splits = splits
+    
+    @cute.jit
+    def __call__(self, mA: cute.Tensor, mSum: cute.Tensor, mO: cute.Tensor):
+        # mO is (H, M, NSPLITS, D) so grid is H * M
+        grid = (cute.size(mA, mode=[0]), cute.size(mA, mode=[1]), 1)
+        copy_op = self.get_tiled_copy()
+        store_op = self.get_tiled_store()
+        num_threads = copy_op.size
+        self.kernel(mA, mSum, mO, copy_op, store_op).launch(grid=grid, block=num_threads)
+    
+    @cute.kernel
+    def kernel(self, 
+        mA: cute.Tensor, mSum: cute.Tensor, mO: cute.Tensor,
+        copy_op: cute.TiledCopy, store_op: cute.TiledCopy,
+        ):
+        tidx, _, _ = cute.arch.thread_idx()
+        head_idx, m_idx, _ = cute.arch.block_idx()
+
+        rA = cute.make_rmem_tensor((1, self.thread_numel, self.splits), self.dtype)
+        rO = cute.make_rmem_tensor((1, self.thread_numel), self.out_dtype)
+
+        # [CHECKED] Iterate through k splits and copy in relevant parts of the input 
+        thr_copy = copy_op.get_slice(tidx)
+        for i in cutlass.range_constexpr(self.splits):
+            mA_slice = mA[head_idx, None, i, None]
+            gA = cute.local_tile(mA_slice, (1, self.n), (m_idx, 0))
+            tAgA = thr_copy.partition_S(gA)
+
+            # NOTE not sure why but if I do this, rA doesn't get updated...
+            # dst_copy = thr_copy.partition_D(rA)
+            # cute.copy(copy_op, tAgA[None, 0, 0], dst_copy[None, 0, 0, i])
+            cute.copy(copy_op, tAgA[None, 0, 0], rA[0, None, i])
+        
+        # [CHECKED] Copy in the sum and reduce
+        row_sum = cutlass.Float32(0.0)
+        if tidx < self.splits:
+            row_sum = mSum[head_idx, tidx, m_idx]
+        reduced_row_sum = cute.arch.warp_reduction(row_sum, operator.add)
+        
+        # Do the sum reduction of the slice and also divide and store out
+        for i in cutlass.range_constexpr(cute.size(rO)):
+            tmp = self.dtype(0)
+            for j in cutlass.range_constexpr(self.splits):
+                tmp += rA[0, i, j]
+            tmp *= cute.arch.rcp_approx(reduced_row_sum)
+            rO[i] = self.out_dtype(tmp)
+        # print0(reduced_row_sum)
+        # print0(rA)
+        # print0(rO)
+        
+        # mO is (H, M, D)
+        thr_store = store_op.get_slice(tidx)
+        mO_slice = mO[head_idx, None, None]
+        gO = cute.local_tile(mO_slice, (1, self.n), (m_idx, 0))
+        # tOgI = thr_store.partition_S(rO)
+        tOgO = thr_store.partition_D(gO)
+        cute.copy(store_op, rO[0, None], tOgO[None, 0, 0])
+        
+
+    @cute.jit
+    def get_tiled_copy(self):
+        copy_op = cute.nvgpu.CopyUniversalOp()
+        copy_atom = cute.make_copy_atom(copy_op, self.dtype, num_bits_per_copy=128) # float4
+        tiler_mn = (1, self.n)
+        layout_tv = cute.make_layout((32, (1, self.thread_numel)), stride=(self.thread_numel, (1, 1)))
+        return cute.make_tiled_copy(copy_atom, layout_tv, tiler_mn)
+    
+    @cute.jit
+    def get_tiled_store(self):
+        copy_op = cute.nvgpu.CopyUniversalOp()
+        copy_atom = cute.make_copy_atom(copy_op, self.out_dtype, num_bits_per_copy=64) # 4xbfloat16
+        tiler_mn = (1, self.n)
+        layout_tv = cute.make_layout((32, (1, self.thread_numel)), stride=(self.thread_numel, (1, 1)))
+        return cute.make_tiled_copy(copy_atom, layout_tv, tiler_mn)
