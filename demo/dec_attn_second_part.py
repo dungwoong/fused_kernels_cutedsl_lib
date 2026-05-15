@@ -1,6 +1,6 @@
 import torch
 from triton.testing import do_bench
-from cutedsl_kernels import DAttn1
+from cutedsl_kernels import DAttn2 as Attn
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 import time
 import math
@@ -25,7 +25,7 @@ if __name__ == '__main__':
 
     M = 16
     D = 128
-    P = 16384
+    P = 1024
     H = 32
     N = H * D
     print(f'{N=}')
@@ -58,11 +58,11 @@ if __name__ == '__main__':
     ref = torch_fn(Q, K, Vt)
     # ref = Q @ K[:, -128:, :].transpose(1, 2)
 
-    kernel = DAttn1(
+    kernel = Attn(
         qk_mnk=(16, 128, 128),
         stages=2,
         p_stages=1,
-        is_persistent=True
+        is_persistent=False
         )
     
     tensors = (Q, K, V, O, multiplier)
@@ -80,7 +80,7 @@ if __name__ == '__main__':
         o = torch.nn.functional.scaled_dot_product_attention(
             q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)
         )
-        return o
+        return o.squeeze(0)
     o_sdpa = torch_sdpa(Q, K, Vt)
 
     if not IS_NCU:
