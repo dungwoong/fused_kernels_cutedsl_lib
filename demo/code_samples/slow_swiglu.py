@@ -38,6 +38,12 @@ alloc_from_pool = torch.ops.inductor._alloc_from_pool
 async_compile = AsyncCompile()
 empty_strided_p2p = torch._C._distributed_c10d._SymmetricMemory.empty_strided_p2p
 
+# Original
+def torch_swiglu_slow(a, b, b1):
+    o1 = a @ b.t()
+    o2 = a @ b1.t()
+    return torch.nn.functional.silu(o1) * o2
+
 
 # kernel path: /tmp/torchinductor_wangke61/43/c43lk5dxsj36a7mwat5ujpfaiaul2g25dn263ydgh7ianiyxokob.py
 # Topologically Sorted Source Nodes: [silu, mul], Original ATen: [aten.silu, aten.mul]
