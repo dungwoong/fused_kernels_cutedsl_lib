@@ -103,7 +103,7 @@ if __name__ == '__main__':
         print(f'{sdpa_ms=}, ({sdpa_ms / my_ms})')
 
         X = torch.randn((M, N), dtype=torch.bfloat16, device='cuda')
-        Wqkv = torch.randn((N, N), dtype=torch.bfloat16, device='cuda')
+        Wqkv = torch.randn((N, 3 * N), dtype=torch.bfloat16, device='cuda')
         time.sleep(2)
         matmul_ms = do_bench(lambda: X @ Wqkv)
         print(f'{matmul_ms=}')

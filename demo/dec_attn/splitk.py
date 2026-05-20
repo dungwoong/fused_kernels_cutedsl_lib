@@ -113,6 +113,16 @@ if __name__ == '__main__':
         compiled_attn(q, k, v, o, osum, multiplier)
         compiled_reduce(o, osum, ofinal)
         return ofinal
+    
+    def my_fn_no_reduce(q, k, v, multiplier):
+        H, M, D = q.shape
+        o = torch.empty((H, M, NSPLITS, D), dtype=acc_dtype, device='cuda')
+        osum = torch.empty((H, NSPLITS, M), dtype=acc_dtype, device='cuda')
+        ofinal = torch.empty((H, M, D), dtype=dtype, device='cuda')
+
+        compiled_attn(q, k, v, o, osum, multiplier)
+        # compiled_reduce(o, osum, ofinal)
+        return ofinal
 
     if not IS_NCU:
         ref_rmse = get_rmse(ref64, ref.to(ref64.dtype))
@@ -130,8 +140,12 @@ if __name__ == '__main__':
         torch_ms = do_bench(lambda: compiled_torch(Q, K, Vt))
         time.sleep(2)
         sdpa_ms = do_bench(lambda: torch_sdpa(Q, K, Vt))
+        time.sleep(2)
+        no_reduce_ms = do_bench(lambda: my_fn_no_reduce(Q, K, V, multiplier))
         print(f'{my_ms=}, {torch_ms=} ({torch_ms/my_ms})')
         print(f'{sdpa_ms=}, ({sdpa_ms / my_ms})')
+
+        print(f'Combine is {1 - (no_reduce_ms / my_ms)} of the computation')
 
     #     X = torch.randn((M, N), dtype=torch.bfloat16, device='cuda')
     #     Wqkv = torch.randn((N, N), dtype=torch.bfloat16, device='cuda')
