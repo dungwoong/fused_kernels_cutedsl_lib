@@ -47,3 +47,7 @@ Accumulating stuff
 # Some bugs I had
 - Make sure you keep track of what the layouts will be so you index in the right places
 - I had things wrong so I was always indexing my one thing at 0 and indexing another thing on the moving thing and it was not good.
+
+# Local Sum
+- https://forums.developer.nvidia.com/t/differences-between-stack-frame-spill-stores-and-spill-loads/317835/2
+- registers cannot be indexed. You cannot select a register as an operand based on the numerical content of another register. So when we try to do something like `smem[i] = reg_arr[reg_idx]` it will move that entire register array to local storage. So it's better to just let less threads store more data I guess.

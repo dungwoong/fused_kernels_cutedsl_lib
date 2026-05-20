@@ -135,6 +135,7 @@ if __name__ == '__main__':
     #     allclose = torch.allclose(ref, O)
     #     print(f'{allclose=}')
         compiled_torch = torch.compile(torch_fn)
+        # compiled_torch = torch_fn
         my_ms = do_bench(lambda: my_fn(Q, K, V, multiplier))
         time.sleep(2)
         torch_ms = do_bench(lambda: compiled_torch(Q, K, Vt))
@@ -147,6 +148,11 @@ if __name__ == '__main__':
 
         print(f'Combine is {1 - (no_reduce_ms / my_ms)} of the computation')
 
+        X = torch.randn((M, N), dtype=torch.bfloat16, device='cuda')
+        Wqkv = torch.randn((N, 3 * N), dtype=torch.bfloat16, device='cuda')
+        matmul_ms = do_bench(lambda: X @ Wqkv)
+
+        print(f'{matmul_ms=}, {matmul_ms + my_ms} / {matmul_ms + torch_ms} ({(matmul_ms + torch_ms)/(matmul_ms + my_ms)})')
     #     X = torch.randn((M, N), dtype=torch.bfloat16, device='cuda')
     #     Wqkv = torch.randn((N, N), dtype=torch.bfloat16, device='cuda')
     #     time.sleep(2)

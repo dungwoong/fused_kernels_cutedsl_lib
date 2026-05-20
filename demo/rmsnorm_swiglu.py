@@ -87,6 +87,7 @@ if __name__ == '__main__':
         print(f'{rmse_ref=}, {rmse_mine=}')
     
     torch_func = torch.compile(torch_fn)
+    # torch_func = torch_fn
     torch_func_slow = torch.compile(torch_fn_slow)
     
     def cdsl_func(a, b, b1):

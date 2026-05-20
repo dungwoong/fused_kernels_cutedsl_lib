@@ -74,10 +74,16 @@ def store_partial_sums(acc: cute.TensorSSA, reduction_buffer: cute.Tensor, num_t
     lane_idx, warp_idx = cute.arch.lane_idx(), cute.arch.warp_idx()
     idx0, idx1 = lane_idx // 4, lane_idx % 4
     st_idx = idx0 * 8 + idx1 * 2
-    reg_idx = idx0 * 2
-    if lane_idx < 8:
-        reduction_buffer[st_idx, warp_idx] = acc[reg_idx]
-        reduction_buffer[st_idx + 1, warp_idx] = acc[reg_idx + 1]
+
+    # reg_idx = idx0 * 2
+    # if lane_idx < 8:
+    #     reduction_buffer[st_idx, warp_idx] = acc[reg_idx]
+    #     reduction_buffer[st_idx + 1, warp_idx] = acc[reg_idx + 1]
+    if lane_idx < 4:
+        reduction_buffer[st_idx, warp_idx] = acc[0]
+        reduction_buffer[st_idx + 1, warp_idx] = acc[1]
+        reduction_buffer[st_idx + 8, warp_idx] = acc[2]
+        reduction_buffer[st_idx + 9, warp_idx] = acc[3]
     cute.arch.barrier(barrier_id=NamedBarrierFwd.Reduction_Sync, number_of_threads=num_threads)
 
 @cute.jit
@@ -215,8 +221,8 @@ class KernelSplitKGMEM:
         self.stages = stages
         self.p_stages = p_stages
 
-        self.consumer_regs = 232
-        self.producer_regs = 40
+        self.consumer_regs = 160
+        self.producer_regs = 64
         self.nconsumer_warps = None
 
         self.k_splits = k_splits
@@ -272,7 +278,7 @@ class KernelSplitKGMEM:
             mO_s2g_atom, mO_s2g_tensor,
             mSum,
             qk_gemm, pv_gemm,
-        ).launch(grid=grid, block=[(self.nconsumer_warps + 4) * cute.arch.WARP_SIZE])
+        ).launch(grid=grid, block=[(self.nconsumer_warps + 4) * cute.arch.WARP_SIZE, 1, 1])
     
     @cute.kernel
     def kernel(
@@ -378,12 +384,12 @@ class KernelSplitKGMEM:
             
             # print0(acc_sum)
             warp_sum = warp_sum_column(acc_sum.load())
-            # print0(warp_sum)
+            # # print0(warp_sum)
 
-            # TODO this is causing stack frame spills(32B)
+            # # TODO this is causing stack frame spills(32B)
+            # # 32B stack frame for some reason
             store_partial_sums(warp_sum, sSum, self.nconsumer_warps * cute.arch.WARP_SIZE)
             col_sum_needed = reduce_block_col_sum(sSum, self.acc_dtype)
-            # col_scale(acc_o, col_sum_needed)
 
             acc_o_16 = cute.make_fragment_like(acc_o, self.dtype)
             acc_o_16.store(acc_o.load().to(self.dtype))
@@ -393,13 +399,21 @@ class KernelSplitKGMEM:
             # _store_t(acc_o_16, sO[None, None, 0], pv_gemm, tidx, self.dtype)
             cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
             cute.arch.barrier_arrive(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * cute.arch.WARP_SIZE)
-            # print0(sP[None, None, 0])
+            # # print0(sP[None, None, 0])
 
-            # Only one warp needs to do the store, and only the first 8 threads need to too btw
-            if tidx < 8:
+            # # Only one warp needs to do the store, and only the first 8 threads need to too btw
+            # if tidx < 8:
+            #     curr_osum = mSum[head_idx, k_idx, None]
+            #     local_osum = cute.local_tile(curr_osum, (2,), (tidx,))
+            #     local_col_sum = cute.local_tile(col_sum_needed, (2,), (tidx // 4,))
+            #     cute.autovec_copy(local_col_sum, local_osum)
+            if tidx < 4:
                 curr_osum = mSum[head_idx, k_idx, None]
-                local_osum = cute.local_tile(curr_osum, (2,), (tidx,))
-                local_col_sum = cute.local_tile(col_sum_needed, (2,), (tidx // 4,))
+                local_osum = cute.local_tile(curr_osum, (2,), (tidx,)) # GMEM
+                local_col_sum = cute.local_tile(col_sum_needed, (2,), (0,))
+                cute.autovec_copy(local_col_sum, local_osum)
+                local_osum = cute.local_tile(curr_osum, (2,), (tidx+4,)) # GMEM
+                local_col_sum = cute.local_tile(col_sum_needed, (2,), (1,))
                 cute.autovec_copy(local_col_sum, local_osum)
             if warp_idx == 0:
                 cute.arch.barrier(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * cute.arch.WARP_SIZE)

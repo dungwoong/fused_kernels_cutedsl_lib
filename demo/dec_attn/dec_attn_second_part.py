@@ -94,6 +94,7 @@ if __name__ == '__main__':
         allclose = torch.allclose(ref, O)
         print(f'{allclose=}')
         compiled_torch = torch.compile(torch_fn)
+        # compiled_torch = torch_fn
         my_ms = do_bench(lambda: compiled_attn(*tensors))
         time.sleep(2)
         torch_ms = do_bench(lambda: compiled_torch(Q, K, Vt))
@@ -107,7 +108,7 @@ if __name__ == '__main__':
         time.sleep(2)
         matmul_ms = do_bench(lambda: X @ Wqkv)
         print(f'{matmul_ms=}')
-        print('Total speedup')
+        print(f'Total speedup {(matmul_ms + torch_ms)} {(matmul_ms + my_ms)}')
         print(f'{(matmul_ms + torch_ms) / (matmul_ms + my_ms)}')
         # 1024 0.01660434291032808
         # 2048 0.025651082584480626

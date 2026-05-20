@@ -75,9 +75,14 @@ def store_partial_sums(acc: cute.TensorSSA, reduction_buffer: cute.Tensor, num_t
     idx0, idx1 = lane_idx // 4, lane_idx % 4
     st_idx = idx0 * 8 + idx1 * 2
     reg_idx = idx0 * 2
-    if lane_idx < 8:
-        reduction_buffer[st_idx, warp_idx] = acc[reg_idx]
-        reduction_buffer[st_idx + 1, warp_idx] = acc[reg_idx + 1]
+    # if lane_idx < 8:
+    #     reduction_buffer[st_idx, warp_idx] = acc[reg_idx]
+    #     reduction_buffer[st_idx + 1, warp_idx] = acc[reg_idx + 1]
+    if lane_idx < 4:
+        reduction_buffer[st_idx, warp_idx] = acc[0]
+        reduction_buffer[st_idx + 1, warp_idx] = acc[1]
+        reduction_buffer[st_idx + 8, warp_idx] = acc[2]
+        reduction_buffer[st_idx + 9, warp_idx] = acc[3]
     cute.arch.barrier(barrier_id=NamedBarrierFwd.Reduction_Sync, number_of_threads=num_threads)
 
 @cute.jit
