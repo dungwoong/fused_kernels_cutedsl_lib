@@ -29,10 +29,22 @@ if __name__ == '__main__':
     ref = a @ b.t()
 
     # Multicast A matrix with cluster shape (1, 2)
+    gemm = Gemm5SM90(
+        tile_shape_mnk=(256, 128, 32),
+        epi_tile_mn=(128, 128),
+        cluster_shape_mnk=(1, 2, 1),
+        atom_layout_mn=(2, 1),
+        ab_stage=6,
+        epi_stage=2,
+        is_persistent=True,
+        gemm_n_prologue=1,
+    )
+
+    # Multicast B matrix with cluster shape (2, 1)
     # gemm = Gemm5SM90(
-    #     tile_shape_mnk=(256, 128, 32),
+    #     tile_shape_mnk=(128, 256, 32),
     #     epi_tile_mn=(128, 128),
-    #     cluster_shape_mnk=(1, 2, 1),
+    #     cluster_shape_mnk=(2, 1, 1),
     #     atom_layout_mn=(2, 1),
     #     ab_stage=6,
     #     epi_stage=2,
@@ -40,17 +52,18 @@ if __name__ == '__main__':
     #     gemm_n_prologue=1,
     # )
 
-    # Multicast B matrix with cluster shape (2, 1)
-    gemm = Gemm5SM90(
-        tile_shape_mnk=(128, 256, 32),
-        epi_tile_mn=(128, 128),
-        cluster_shape_mnk=(2, 1, 1),
-        atom_layout_mn=(2, 1),
-        ab_stage=6,
-        epi_stage=2,
-        is_persistent=True,
-        gemm_n_prologue=1,
-    )
+    # This works for 2048 1024 16384 1.00x
+    # 2048 1024 4096 it's 0.99x
+    # gemm = Gemm5SM90(
+    #     tile_shape_mnk=(128, 128, 64),
+    #     epi_tile_mn=(128, 32),
+    #     cluster_shape_mnk=(1, 2, 1),
+    #     atom_layout_mn=(2, 1),
+    #     ab_stage=6,
+    #     epi_stage=3,
+    #     is_persistent=True,
+    #     gemm_n_prologue=1,
+    # )
 
     # Config for 4096 1536 7168 0.99x
     # gemm = Gemm5SM90(

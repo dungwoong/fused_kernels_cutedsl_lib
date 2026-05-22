@@ -201,7 +201,7 @@ class GemmSM90:
         self.ab_load_warp_id = self.mma_warpgroups * 4
         
         # Registers
-        self.num_regs_load, self.num_regs_mma = 40, 232
+        self.num_regs_load, self.num_regs_mma = (40, 232) if self.mma_warpgroups <= 2 else (32, 160)
 
         self.ab_stage = ab_stage
         self.epi_stage = epi_stage

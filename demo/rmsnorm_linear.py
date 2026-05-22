@@ -16,6 +16,7 @@ def torch_kernel(a: torch.Tensor, b: torch.Tensor):
     a_rms = torch.nn.functional.rms_norm(a, normalized_shape=(a.shape[1],), eps=EPS)
     return a_rms @ b.t()
 
+# ncu --set full -o rmslin_4096_1536_7168 -f --launch-skip 8 python3 demo/rmsnorm_linear.py ncu 4096 1536 7168
 if __name__ == '__main__':
     print('Starting...')
     import argparse
@@ -58,6 +59,33 @@ if __name__ == '__main__':
         gemm_n_prologue=0,
         pingpong=False,
     )
+
+    # 4096 1536 7168
+    # ckernel = RMSNormLinear2SM90(
+    #     tile_shape_mnk=(192, 128, 64),
+    #     epi_tile_mn=(192, 128),
+    #     cluster_shape_mnk=(1, 2, 1),
+    #     atom_layout_mn=(3, 1),
+    #     ab_stage=4,
+    #     epi_stage=1,
+    #     is_persistent=True,
+    #     gemm_n_prologue=0,
+    #     pingpong=False,
+    # )
+
+    # 2048 1024 16384
+    # ckernel = RMSNormLinear2SM90(
+    #     tile_shape_mnk=(128, 128, 64),
+    #     epi_tile_mn=(128, 32),
+    #     cluster_shape_mnk=(1, 2, 1),
+    #     atom_layout_mn=(2, 1),
+    #     ab_stage=6,
+    #     epi_stage=3,
+    #     is_persistent=True,
+    #     gemm_n_prologue=0,
+    #     pingpong=False,
+    # )
+    
     ckernel_2 = RMSNormLinear1SM90(
         tile_shape_mn=(128, 256), 
         epi_tile_mn=(128, 32),
