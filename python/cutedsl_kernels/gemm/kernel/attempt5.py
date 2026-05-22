@@ -94,6 +94,8 @@ class GemmSM90:
         
         # Registers
         self.num_regs_load, self.num_regs_mma = 40, 232
+        if self.mma_warpgroups == 3:
+            self.num_regs_load, self.num_regs_mma = 32, 160
 
         self.ab_stage = ab_stage
         self.epi_stage = epi_stage

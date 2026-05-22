@@ -11,6 +11,13 @@ Something around 1.08x
 But also, I don't need to store back the entire results matrix
 
 But we know I was somehow able to beat their splitk so it's not totally optimal for them...
+
+1024 16384 1024 > 1.31x
+512 16384 1024 > 1.27x
+512 16384 4096 > 1.03x :(
+4096 16384 4096 > 1.01x :(
+4096 32768 512 > 1.54x
+4096 16384 512 > 1.57x
 """
 
 EPS = 1e-5

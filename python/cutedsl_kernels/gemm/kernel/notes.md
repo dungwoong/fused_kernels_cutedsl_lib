@@ -47,3 +47,6 @@ Looking at the NCU report
 - the issue could potentially be since we have to write back slowly, the throughput is lower. But honestly idek because the epi tile is 64, 64 and we used to have 128 32
 - I could try increasing gemm n prologue or smth. Ok that did not work. 1 is good. If 1 is 92%, 0 is 90% so it's ok to be at 0 which is good for rmsnorm + linear or auto-codegen
 - We could try better rasterization with the scheduler to get a better hitrate on the B matrix potentially but I'm not sure
+
+# Supporting 3 WGs
+- the only thing that wasn't adaptable to that was the reg dealloc and alloc. I just copied quack, they have 32 160 for 3 WG and 40 232 for 2 WGs

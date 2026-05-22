@@ -85,10 +85,10 @@ if __name__ == '__main__':
         rmse_mine = get_rmse(c.to(ref_64.dtype), ref_64)
         print(f'{rmse_ref=}, (rs){rmse_mine=}')
     
-    torch_func = torch.compile(backend="inductor", mode="max-autotune-no-cudagraphs", fullgraph=True)(torch_swiglu)
-    torch_func_slow = torch.compile(backend="inductor", mode="max-autotune-no-cudagraphs", fullgraph=True)(torch_swiglu_slow)
-    # torch_func = torch.compile(torch_swiglu)
-    # torch_func_slow = torch.compile(torch_swiglu_slow)
+    # torch_func = torch.compile(backend="inductor", mode="max-autotune-no-cudagraphs", fullgraph=True)(torch_swiglu)
+    # torch_func_slow = torch.compile(backend="inductor", mode="max-autotune-no-cudagraphs", fullgraph=True)(torch_swiglu_slow)
+    torch_func = torch.compile(torch_swiglu)
+    torch_func_slow = torch.compile(torch_swiglu_slow)
 
     
     def cdsl_func(a, b, b1):

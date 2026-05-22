@@ -52,6 +52,30 @@ if __name__ == '__main__':
         gemm_n_prologue=1,
     )
 
+    # Config for 4096 1536 7168 0.99x
+    # gemm = Gemm5SM90(
+    #     tile_shape_mnk=(192, 128, 64),
+    #     epi_tile_mn=(192, 128),
+    #     cluster_shape_mnk=(1, 2, 1),
+    #     atom_layout_mn=(3, 1),
+    #     ab_stage=4,
+    #     epi_stage=1,
+    #     is_persistent=True,
+    #     gemm_n_prologue=0,
+    # )
+
+    # config for 3072 3072 3072 0.97x
+    # gemm = Gemm5SM90(
+    #     tile_shape_mnk=(192, 192, 64),
+    #     epi_tile_mn=(192, 64),
+    #     cluster_shape_mnk=(2, 1, 1),
+    #     atom_layout_mn=(3, 1),
+    #     ab_stage=3,
+    #     epi_stage=3,
+    #     is_persistent=True,
+    #     gemm_n_prologue=0,
+    # )
+
     # Horizontal tiles
     # gemm = Gemm5SM90(
     #     tile_shape_mnk=(64, 512, 32),
