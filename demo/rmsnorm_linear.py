@@ -61,17 +61,19 @@ if __name__ == '__main__':
     )
 
     # 4096 1536 7168
-    # ckernel = RMSNormLinear2SM90(
-    #     tile_shape_mnk=(192, 128, 64),
-    #     epi_tile_mn=(192, 128),
-    #     cluster_shape_mnk=(1, 2, 1),
-    #     atom_layout_mn=(3, 1),
-    #     ab_stage=4,
-    #     epi_stage=1,
-    #     is_persistent=True,
-    #     gemm_n_prologue=0,
-    #     pingpong=False,
-    # )
+    if (m, n, k) == (4096, 1536, 7168):
+        print('Using specialized config')
+        ckernel = RMSNormLinear2SM90(
+            tile_shape_mnk=(192, 128, 64),
+            epi_tile_mn=(192, 128),
+            cluster_shape_mnk=(1, 2, 1),
+            atom_layout_mn=(3, 1),
+            ab_stage=4,
+            epi_stage=1,
+            is_persistent=True,
+            gemm_n_prologue=0,
+            pingpong=False,
+        )
 
     # 2048 1024 16384
     # ckernel = RMSNormLinear2SM90(
