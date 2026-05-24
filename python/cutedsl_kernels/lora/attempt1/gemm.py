@@ -133,7 +133,7 @@ class GemmSM90:
         assert not (self.reuse_ab and self.is_persistent), "Persistent kernel can't reuse AB for epilogue"
 
     @cute.jit
-    def __call__(self, a: cute.Tensor, b: cute.Tensor, lora_xA: cute.Tensor, lora_B: cute.Tensor, c: cute.Tensor, stream: cuda.CUstream):
+    def __call__(self, a: cute.Tensor, b: cute.Tensor, lora_xA: cute.Tensor, lora_B: cute.Tensor, c: cute.Tensor):
         # Populate fields
         self.populate_dtypes_and_layouts(a, b, c, lora_xA, lora_B)
         self.populate_mma_atom()
@@ -174,7 +174,7 @@ class GemmSM90:
             self.cluster_layout_mnk,
             self.epi_smem_layout_staged,
             tma_atom_d, tma_tensor_d
-        ).launch(grid=grid, block=[self.threads_per_cta, 1, 1], cluster=self.cluster_shape_mnk, stream=stream) # min_blocks_per_mp=1 only if kernel is large
+        ).launch(grid=grid, block=[self.threads_per_cta, 1, 1], cluster=self.cluster_shape_mnk) # min_blocks_per_mp=1 only if kernel is large
     
     @cute.kernel
     def kernel(self,
