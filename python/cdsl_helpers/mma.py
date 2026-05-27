@@ -6,12 +6,13 @@ from typing import Optional, Type
 import cutlass.utils.hopper_helpers as sm90_utils
 
 
-def get_tiled_mma(ab_dtype: Type[cutlass.Numeric], a_major_k, b_major_k, acc_dtype, tile_m, tile_n):
+def get_tiled_mma(ab_dtype: Type[cutlass.Numeric], a_major_k, b_major_k, acc_dtype, tile_m, tile_n, a_in_rs=False):
     assert tile_m % 64 == 0, "tiled_mma tile_m must be a multiple of 64 for now"
     assert tile_n % 8 == 0, "tiled_mma tile_n must be a multiple of 8 for now"
     # if tile shape is none then you just do the entire tile size
     a_mode = cute.nvgpu.warpgroup.OperandMajorMode.K if a_major_k else cute.nvgpu.warpgroup.OperandMajorMode.MN
     b_mode = cute.nvgpu.warpgroup.OperandMajorMode.K if b_major_k else cute.nvgpu.warpgroup.OperandMajorMode.MN
+    a_source = cute.nvgpu.warpgroup.OperandSource.RMEM if a_in_rs else cute.nvgpu.warpgroup.OperandSource.SMEM
     tiled_mma = sm90_utils.make_trivial_tiled_mma(
         ab_dtype,
         ab_dtype,
@@ -21,6 +22,7 @@ def get_tiled_mma(ab_dtype: Type[cutlass.Numeric], a_major_k, b_major_k, acc_dty
         # TODO this assumes the MMA atom layout
         atom_layout_mnk=(tile_m // 64, 1, 1),
         tiler_mn=(64, tile_n),
+        a_source=a_source
     )
     return tiled_mma
 

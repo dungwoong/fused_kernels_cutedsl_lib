@@ -72,7 +72,7 @@ if __name__ == '__main__':
         )
     reduce_kernel = AttnReduce1(n=128, splits=NSPLITS)
     
-    tensors = (Q, K, V, O, Osum, multiplier)
+    tensors = (Q, K, Vt, O, Osum, multiplier)
     red_tensors = (O, Osum, O_final)
     compiled_attn = compile_cutedsl(tensors, kernel, False)
     compiled_reduce = compile_cutedsl(red_tensors, reduce_kernel, False)
@@ -136,13 +136,13 @@ if __name__ == '__main__':
     #     print(f'{allclose=}')
         compiled_torch = torch.compile(torch_fn)
         # compiled_torch = torch_fn
-        my_ms = do_bench(lambda: my_fn(Q, K, V, multiplier))
+        my_ms = do_bench(lambda: my_fn(Q, K, Vt, multiplier))
         time.sleep(2)
         torch_ms = do_bench(lambda: compiled_torch(Q, K, Vt))
         time.sleep(2)
         sdpa_ms = do_bench(lambda: torch_sdpa(Q, K, Vt))
         time.sleep(2)
-        no_reduce_ms = do_bench(lambda: my_fn_no_reduce(Q, K, V, multiplier))
+        no_reduce_ms = do_bench(lambda: my_fn_no_reduce(Q, K, Vt, multiplier))
         print(f'{my_ms=}, {torch_ms=} ({torch_ms/my_ms})')
         print(f'{sdpa_ms=}, ({sdpa_ms / my_ms})')
 

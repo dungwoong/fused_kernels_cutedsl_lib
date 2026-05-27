@@ -40,7 +40,7 @@ if __name__ == '__main__':
     Q64 = torch.randn((H, M, D), dtype=rtype).to('cuda')
     K64 = torch.randn((H, P, D), dtype=rtype).to('cuda')
     V64 = torch.randn((H, D, P), dtype=rtype).to('cuda')
-    Vt64 = V64.transpose(1, 2).contiguous()
+    Vt64 = V64.transpose(1, 2).contiguous() # H, P, D yayy
 
     Q = Q64.to(dtype)
     K = K64.to(dtype)
@@ -66,7 +66,7 @@ if __name__ == '__main__':
         is_persistent=False
         )
     
-    tensors = (Q, K, V, O, multiplier)
+    tensors = (Q, K, Vt, O, multiplier)
     compiled_attn = compile_cutedsl(tensors, kernel, False)
     compiled_attn(*tensors)
     torch.cuda.synchronize()

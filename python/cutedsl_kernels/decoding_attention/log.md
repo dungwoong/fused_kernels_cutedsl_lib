@@ -51,3 +51,8 @@ Accumulating stuff
 # Local Sum
 - https://forums.developer.nvidia.com/t/differences-between-stack-frame-spill-stores-and-spill-loads/317835/2
 - registers cannot be indexed. You cannot select a register as an operand based on the numerical content of another register. So when we try to do something like `smem[i] = reg_arr[reg_idx]` it will move that entire register array to local storage. So it's better to just let less threads store more data I guess.
+
+# Allowing V to be normal layout
+- currently, I have V as (dim, seqlen) so you can load it in and it's seqlen-major(K-major) but attention isn't like that
+- if I load in (seqlen, dim), I swear you are allowed to do wgmma where A is transposed, as long as its in SMEM but I guess cutedsl doesn't have that yet
+- so I just did a transposed ldmatrix to get it manually, and then just wgmma with A in registers...

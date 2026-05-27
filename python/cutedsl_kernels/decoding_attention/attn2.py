@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Type
 import enum
 import math
 import operator
@@ -7,6 +7,13 @@ import cutlass
 from cutlass import cute, pipeline
 from cdsl_helpers import shared, mma, pipeline as my_pipeline, layout as my_layout, store as my_store
 from . import attn_scheduler, my_utils
+
+"""
+This was decoding attention where you'd have to operate on tranposed V
+(heads, dim, seqlen)
+and you could use SS wgmma.
+Just for reference
+"""
 
 @cute.jit
 def print0(x):
@@ -182,6 +189,34 @@ def _store_t(src: cute.Tensor, dst: cute.Tensor, tiled_gemm: cute.TiledMma, tidx
     cute.copy(copy_atom, r2s_r, r2s_s)
 
 @cute.jit
+def copy_a_wgmma_T(tidx: cutlass.Int32, tiled_mma: cute.TiledMma, sA: cute.Tensor, tile_m: int, tile_n: int, dtype: Type[cutlass.Numeric]):
+    """
+    sA should be ONLY a single stage(2D tensor)
+    Returns the copy in an mma-ready format
+    
+    no trans ldmatrix
+    the shared tensor must be transposed
+    """
+    copy_atom_A = cute.make_copy_atom(
+        cute.nvgpu.warp.LdMatrix8x8x16bOp(
+            True,
+            4,
+        ),
+        dtype,
+    )
+    tiled_copy_s2r = cute.make_tiled_copy_A(copy_atom_A, tiled_mma)
+    thr_copy_s2r = tiled_copy_s2r.get_slice(tidx)
+    s2r_sA = thr_copy_s2r.partition_S(sA)
+    s2r_r_shape = tiled_mma.partition_shape_A(
+        (tile_m, tile_n)
+    )
+    a_regs_mma = cute.make_rmem_tensor(s2r_r_shape, dtype)
+    a_regs = thr_copy_s2r.retile(a_regs_mma)
+    cute.copy(tiled_copy_s2r, s2r_sA, a_regs)
+    return a_regs_mma
+
+
+@cute.jit
 def _tma_store_single(src: cute.Tensor, dst: cute.Tensor, tile_m: int, tile_n: int, idx_m: int, idx_n: int, s2g_atom: cute.CopyAtom):
     gO = cute.local_tile(dst, (tile_m, tile_n), (idx_m, idx_n))
     store_O, _, _ = shared.tma_get_copy_fn(
@@ -227,10 +262,12 @@ class Kernel:
         mQ = my_layout.select(mQ, [1, 2, 0])
         mK = my_layout.select(mK, [1, 2, 0])
         mV = my_layout.select(mV, [1, 2, 0])
+        print('mK', mK)
+        print('mV', mV) # tensor<ptr<bf16, gmem, align<16>> o (1024,128,32):(128,1,131072)>
         mO = my_layout.select(mO, [1, 2, 0])
 
         qk_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.tile_k, self.seq_q)
-        pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q)
+        pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q, a_in_rs=True)
         assert qk_gemm.size == pv_gemm.size
         consumer_wgs = qk_gemm.size // 128
         self.nconsumer_warps = consumer_wgs * 4
@@ -243,13 +280,13 @@ class Kernel:
         # NOTE this requires V to be stored in a transposed fashion, which is alright for inference
         # but WGMMA should support A as mn-major according to PTX ISA...
         sP_layout = shared.get_smem_layout_row_major(self.dtype, self.seq_q, self.tile_k, self.p_stages)
-        sV_layout = shared.get_smem_layout_row_major(self.dtype, self.dim, self.tile_k, self.stages)
+        sV_layout = shared.get_smem_layout_row_major(self.dtype, self.tile_k, self.dim, self.stages)
         sO_layout = shared.get_smem_layout_row_major(self.dtype, self.seq_q, self.dim, 1)
         sSum_layout = cute.make_layout((self.seq_q, self.nconsumer_warps)) # length, num_warps
 
         mQ_g2s_atom, mQ_g2s_tensor = shared.get_tma_tensor_and_atom(mQ, sQ_layout, self.seq_q, self.dim)
         mK_g2s_atom, mK_g2s_tensor = shared.get_tma_tensor_and_atom(mK, sK_layout, self.tile_k, self.dim)
-        mV_g2s_atom, mV_g2s_tensor = shared.get_tma_tensor_and_atom(mV, sV_layout, self.dim, self.tile_k)
+        mV_g2s_atom, mV_g2s_tensor = shared.get_tma_tensor_and_atom(mV, sV_layout, self.tile_k, self.dim)
         mO_s2g_atom, mO_s2g_tensor = get_epi_tensor_atom(mO, sO_layout, (self.seq_q, self.dim))
 
         nheads = mK.shape[2]
@@ -307,6 +344,7 @@ class Kernel:
         sQ = shared.smem_get_tensor(dsmem, 'sQ_ptr', sQ_layout)
         sK = shared.smem_get_tensor(dsmem, 'sK_ptr', sK_layout)
         sV = shared.smem_get_tensor(dsmem, 'sV_ptr', sV_layout)
+        sVt = my_utils.transpose_view(sV)
         sP = shared.smem_get_tensor(dsmem, 'sP_ptr', sP_layout)
         sO = shared.smem_get_tensor(dsmem, 'sO_ptr', sO_layout)
         sSum = shared.smem_get_tensor(dsmem, 'sum_buf', sSum_layout)
@@ -366,7 +404,8 @@ class Kernel:
                     pipe_v.consumer_wait(state_v, pipe_v.consumer_try_wait(state_v))
 
                     # this should be Vt Pt = (PV)t
-                    mma.accumulating_gemm_ss(tidx, pv_gemm, sV, sP, acc_o, state_v, 0, accumulate_O, 0)
+                    rV = copy_a_wgmma_T(tidx, pv_gemm, sVt[None, None, state_v.index], self.tile_k, self.dim, self.dtype)
+                    mma.accumulating_gemm_rs(tidx, pv_gemm, rV, sP, acc_o, state_v, accumulate_O, 0)
                     accumulate_O = True
                     pipe_v.consumer_release(state_v)
                     state_k.advance()
@@ -418,7 +457,7 @@ class Kernel:
                     shared.tma_copy(mK_g2s_atom, k_curr, sK, self.tile_k, self.dim, 0, 0, pipe_k, state_k)
                     # load v[0]
                     pipe_v.producer_acquire(state_v, pipe_v.producer_try_acquire(state_v))
-                    shared.tma_copy(mV_g2s_atom, v_curr, sV, self.dim, self.tile_k, 0, 0, pipe_v, state_v)
+                    shared.tma_copy(mV_g2s_atom, v_curr, sV, self.tile_k, self.dim, 0, 0, pipe_v, state_v)
                     state_k.advance()
                     state_v.advance()
                     for k in cutlass.range(1, k_iters, unroll=1):
@@ -427,7 +466,7 @@ class Kernel:
                         shared.tma_copy(mK_g2s_atom, k_curr, sK, self.tile_k, self.dim, k, 0, pipe_k, state_k)
                         # load v[k]
                         pipe_v.producer_acquire(state_v, pipe_v.producer_try_acquire(state_v))
-                        shared.tma_copy(mV_g2s_atom, v_curr, sV, self.dim, self.tile_k, 0, k, pipe_v, state_v)
+                        shared.tma_copy(mV_g2s_atom, v_curr, sV, self.tile_k, self.dim, k, 0, pipe_v, state_v)
                         state_k.advance()
                         state_v.advance()
     
