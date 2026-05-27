@@ -39,29 +39,35 @@ if __name__ == '__main__':
     rtype = torch.float64
     dtype = torch.bfloat16
     acc_dtype = torch.float32
-    Q64 = torch.randn((H, M, D), dtype=rtype).to('cuda')
-    K64 = torch.randn((H, P, D), dtype=rtype).to('cuda')
-    V64 = torch.randn((H, D, P), dtype=rtype).to('cuda')
-    Vt64 = V64.transpose(1, 2).contiguous()
+    Q64 = torch.randn((M, H, D), dtype=rtype).to('cuda')
+    K64 = torch.randn((P, H, D), dtype=rtype).to('cuda')
+    V64 = torch.randn((P, H, D), dtype=rtype).to('cuda')
 
     Q = Q64.to(dtype)
     K = K64.to(dtype)
     V = V64.to(dtype)
-    Vt = Vt64.to(dtype)
 
     NSPLITS=4
-    O = torch.empty((H, M, NSPLITS, D), dtype=acc_dtype).to('cuda')
+    O = torch.empty((H, M, NSPLITS, D), dtype=acc_dtype).to('cuda') 
     Osum = torch.empty((H, NSPLITS, M), dtype=acc_dtype).to('cuda')
-    O_final = torch.empty((H, M, D), dtype=dtype).to('cuda')
+    O_final = torch.empty((M, H, D), dtype=dtype).to('cuda')
 
-    def torch_fn(Q_, K_, Vt_):
+    def torch_fn(Q_, K_, V_):
+        """
+        QKV are seqlen, nheads, dim
+        outputs seqlen, nheads, dim
+        """
+        Q_ = Q_.transpose(0, 1)
+        K_ = K_.transpose(0, 1)
+        V_ = V_.transpose(0, 1)
         P = (Q_ @ K_.transpose(1, 2)).mul(multiplier * math.log2(math.e))
         pre_softmax = torch.exp2(P)
-        o = (pre_softmax @ Vt_)
+        o = (pre_softmax @ V_)
         rowsum = torch.sum(pre_softmax, dim=-1)[..., None]
-        return o / rowsum
-    ref64 = torch_fn(Q64, K64, Vt64)
-    ref = torch_fn(Q, K, Vt)
+        return (o / rowsum).transpose(0, 1).contiguous()
+    
+    ref64 = torch_fn(Q64, K64, V64)
+    ref = torch_fn(Q, K, V)
     # ref = Q @ K[:, -128:, :].transpose(1, 2)
 
     kernel = DAttnSplit1(
@@ -72,7 +78,7 @@ if __name__ == '__main__':
         )
     reduce_kernel = AttnReduce1(n=128, splits=NSPLITS)
     
-    tensors = (Q, K, Vt, O, Osum, multiplier)
+    tensors = (Q, K, V, O, Osum, multiplier)
     red_tensors = (O, Osum, O_final)
     compiled_attn = compile_cutedsl(tensors, kernel, False)
     compiled_reduce = compile_cutedsl(red_tensors, reduce_kernel, False)
@@ -99,30 +105,32 @@ if __name__ == '__main__':
     def torch_sdpa(q, k, v):
         # BHSD
         o = torch.nn.functional.scaled_dot_product_attention(
-            q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)
+            q.transpose(0, 1).unsqueeze(0), k.transpose(0, 1).unsqueeze(0), v.transpose(0, 1).unsqueeze(0)
         )
-        return o.squeeze(0)
-    o_sdpa = torch_sdpa(Q, K, Vt)
+        return o.squeeze(0).transpose(0, 1)
+    o_sdpa = torch_sdpa(Q, K, V)
 
     def my_fn(q, k, v, multiplier):
-        H, M, D = q.shape
+        M, H, D = q.shape
         o = torch.empty((H, M, NSPLITS, D), dtype=acc_dtype, device='cuda')
         osum = torch.empty((H, NSPLITS, M), dtype=acc_dtype, device='cuda')
-        ofinal = torch.empty((H, M, D), dtype=dtype, device='cuda')
+        ofinal = torch.empty((M, H, D), dtype=dtype, device='cuda')
 
         compiled_attn(q, k, v, o, osum, multiplier)
         compiled_reduce(o, osum, ofinal)
         return ofinal
     
     def my_fn_no_reduce(q, k, v, multiplier):
-        H, M, D = q.shape
+        M, H, D = q.shape
         o = torch.empty((H, M, NSPLITS, D), dtype=acc_dtype, device='cuda')
         osum = torch.empty((H, NSPLITS, M), dtype=acc_dtype, device='cuda')
-        ofinal = torch.empty((H, M, D), dtype=dtype, device='cuda')
+        ofinal = torch.empty((M, H, D), dtype=dtype, device='cuda')
 
         compiled_attn(q, k, v, o, osum, multiplier)
         # compiled_reduce(o, osum, ofinal)
         return ofinal
+    
+    print(f'{ref.stride()=}, {O_final.stride()=}, {o_sdpa.stride()=}')
 
     if not IS_NCU:
         ref_rmse = get_rmse(ref64, ref.to(ref64.dtype))
@@ -136,13 +144,13 @@ if __name__ == '__main__':
     #     print(f'{allclose=}')
         compiled_torch = torch.compile(torch_fn)
         # compiled_torch = torch_fn
-        my_ms = do_bench(lambda: my_fn(Q, K, Vt, multiplier))
+        my_ms = do_bench(lambda: my_fn(Q, K, V, multiplier))
         time.sleep(2)
-        torch_ms = do_bench(lambda: compiled_torch(Q, K, Vt))
+        torch_ms = do_bench(lambda: compiled_torch(Q, K, V))
         time.sleep(2)
-        sdpa_ms = do_bench(lambda: torch_sdpa(Q, K, Vt))
+        sdpa_ms = do_bench(lambda: torch_sdpa(Q, K, V))
         time.sleep(2)
-        no_reduce_ms = do_bench(lambda: my_fn_no_reduce(Q, K, Vt, multiplier))
+        no_reduce_ms = do_bench(lambda: my_fn_no_reduce(Q, K, V, multiplier))
         print(f'{my_ms=}, {torch_ms=} ({torch_ms/my_ms})')
         print(f'{sdpa_ms=}, ({sdpa_ms / my_ms})')
 

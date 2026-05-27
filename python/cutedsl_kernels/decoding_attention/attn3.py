@@ -264,10 +264,10 @@ class KernelSplitKGMEM:
              mO is (nheads, 16, SPLITS, 128)
         """
         # seqlen, dim, heads
-        mQ = my_layout.select(mQ, [1, 2, 0])
-        mK = my_layout.select(mK, [1, 2, 0])
-        mV = my_layout.select(mV, [1, 2, 0])
-        mO = my_layout.select(mO, [1, 3, 0, 2])
+        mQ = my_layout.select(mQ, [0, 2, 1])
+        mK = my_layout.select(mK, [0, 2, 1])
+        mV = my_layout.select(mV, [0, 2, 1])
+        mO = my_layout.select(mO, [1, 3, 0, 2]) # no change, O is (H, M, nsplits, D) --> (M, D, H, nsplits)
 
         qk_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.tile_k, self.seq_q)
         pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q, a_in_rs=True)
@@ -528,6 +528,10 @@ class ReduceDowncastKernel:
     @cute.jit
     def __call__(self, mA: cute.Tensor, mSum: cute.Tensor, mO: cute.Tensor):
         # mO is (H, M, NSPLITS, D) so grid is H * M
+        # mO is now (M, H, D) and we have to reshape it to be (H, M, D)
+        # everything should still work, but this is a hassle
+        # I'll revisit this if I have time but it's lowprio
+        mO = my_layout.select(mO, [1, 0, 2])
         grid = (cute.size(mA, mode=[0]), cute.size(mA, mode=[1]), 1)
         copy_op = self.get_tiled_copy()
         store_op = self.get_tiled_store()

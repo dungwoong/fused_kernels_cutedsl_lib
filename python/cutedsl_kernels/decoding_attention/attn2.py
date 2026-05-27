@@ -259,12 +259,10 @@ class Kernel:
              mO is (nheads, 16, 128)
         """
         # seqlen, dim, heads
-        mQ = my_layout.select(mQ, [1, 2, 0])
-        mK = my_layout.select(mK, [1, 2, 0])
-        mV = my_layout.select(mV, [1, 2, 0])
-        print('mK', mK)
-        print('mV', mV) # tensor<ptr<bf16, gmem, align<16>> o (1024,128,32):(128,1,131072)>
-        mO = my_layout.select(mO, [1, 2, 0])
+        mQ = my_layout.select(mQ, [0, 2, 1])
+        mK = my_layout.select(mK, [0, 2, 1])
+        mV = my_layout.select(mV, [0, 2, 1])
+        mO = my_layout.select(mO, [0, 2, 1])
 
         qk_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.tile_k, self.seq_q)
         pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q, a_in_rs=True)
