@@ -1,5 +1,6 @@
 import torch
 from triton.testing import do_bench
+import numpy as np
 
 # @torch.compile
 def gemm(a: torch.Tensor, b: torch.Tensor):

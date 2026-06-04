@@ -151,6 +151,7 @@ class GemmSM90:
         ts_params = SimpleTileScheduler.to_underlying_arguments(ts_args)
         grid = SimpleTileScheduler.get_grid_shape(ts_params, self.max_active_clusters)
 
+        # print(grid)
         self.kernel(
             tma_atom_a, tma_atom_b,
             tma_tensor_a, tma_tensor_b,
