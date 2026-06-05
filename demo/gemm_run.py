@@ -1,6 +1,6 @@
 import torch
 from triton.testing import do_bench
-from cutedsl_kernels import Gemm5SM90
+from cutedsl_kernels import Gemm6SM90 as GemmKernel
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 import time
 
@@ -29,7 +29,7 @@ if __name__ == '__main__':
     ref = a @ b.t()
 
     # Multicast A matrix with cluster shape (1, 2)
-    gemm = Gemm5SM90(
+    gemm = GemmKernel(
         tile_shape_mnk=(256, 128, 32),
         epi_tile_mn=(128, 128),
         cluster_shape_mnk=(1, 2, 1),
@@ -41,7 +41,7 @@ if __name__ == '__main__':
     )
 
     # Multicast B matrix with cluster shape (2, 1)
-    # gemm = Gemm5SM90(
+    # gemm = GemmKernel(
     #     tile_shape_mnk=(128, 256, 32),
     #     epi_tile_mn=(128, 128),
     #     cluster_shape_mnk=(2, 1, 1),
@@ -54,7 +54,7 @@ if __name__ == '__main__':
 
     # This works for 2048 1024 16384 1.00x
     # 2048 1024 4096 it's 0.99x
-    # gemm = Gemm5SM90(
+    # gemm = GemmKernel(
     #     tile_shape_mnk=(128, 128, 64),
     #     epi_tile_mn=(128, 32),
     #     cluster_shape_mnk=(1, 2, 1),
@@ -66,7 +66,7 @@ if __name__ == '__main__':
     # )
 
     # Config for 4096 1536 7168 0.99x
-    # gemm = Gemm5SM90(
+    # gemm = GemmKernel(
     #     tile_shape_mnk=(192, 128, 64),
     #     epi_tile_mn=(192, 128),
     #     cluster_shape_mnk=(1, 2, 1),
@@ -78,7 +78,7 @@ if __name__ == '__main__':
     # )
 
     # config for 3072 3072 3072 0.97x
-    # gemm = Gemm5SM90(
+    # gemm = GemmKernel(
     #     tile_shape_mnk=(192, 192, 64),
     #     epi_tile_mn=(192, 64),
     #     cluster_shape_mnk=(2, 1, 1),
@@ -90,7 +90,7 @@ if __name__ == '__main__':
     # )
 
     # Horizontal tiles
-    # gemm = Gemm5SM90(
+    # gemm = GemmKernel(
     #     tile_shape_mnk=(64, 512, 32),
     #     epi_tile_mn=(64, 64),
     #     cluster_shape_mnk=(2, 1, 1),

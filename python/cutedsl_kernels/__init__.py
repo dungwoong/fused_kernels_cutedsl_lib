@@ -1,4 +1,4 @@
-from .gemm import Gemm1SM90, Gemm2SM90, Gemm3SM90, Gemm4SM90, Gemm5SM90
+from .gemm import Gemm1SM90, Gemm2SM90, Gemm3SM90, Gemm4SM90, Gemm5SM90, Gemm6SM90
 from .lora import LoRASM90
 from .swiglu import SwigluSM90, Swiglu2SM90, Swiglu3SM90
 from .attn import AttnSM90
@@ -8,6 +8,6 @@ from .decoding_attention import DAttn1, DAttn2, DAttnSplit1, AttnReduce1
 
 __all__ = [
     'DAttn1', 'DAttn2', 'DAttnSplit1', 'AttnReduce1',
-    'Gemm5SM90', 'Gemm4SM90', 'Gemm3SM90', 'Gemm2SM90', 'Gemm1SM90', 
+    'Gemm6SM90', 'Gemm5SM90', 'Gemm4SM90', 'Gemm3SM90', 'Gemm2SM90', 'Gemm1SM90', 
     'LoRASM90', 'SwigluSM90', 'Swiglu2SM90', 'Swiglu3SM90', 
     'AttnSM90', 'RMSNormLinear1SM90', 'RMSNormLinear2SM90', 'RMSNormSwiglu1']
