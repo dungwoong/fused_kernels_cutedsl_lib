@@ -41,9 +41,11 @@ class PipelineTmaAsync(PipelineTmaAsyncOg):
             self.sync_object_full.arrive_and_expect_tx(state.index, tx_count)
 
 
+
+# NOTE I moved num_consumer_warps up, if existing stuff stops working try switching the argument order to this function
 @cute.jit
 def make_tma_pipeline(
-    mbar_ptr: cute.Pointer, num_stages: int, num_bytes: int, cta_layout_vmnk: cute.Layout, mcast_size: int, num_consumer_warps: int
+    mbar_ptr: cute.Pointer, num_stages: int, num_bytes: int, num_consumer_warps: int, cta_layout_vmnk: cute.Layout, mcast_size: int,
 ) -> pipeline.PipelineAsync:
     num_producers = 1
     num_consumers = num_consumer_warps * mcast_size  # IMPORTANT!!!

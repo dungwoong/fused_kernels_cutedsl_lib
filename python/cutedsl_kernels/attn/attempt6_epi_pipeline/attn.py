@@ -122,7 +122,8 @@ class FlashSM90:
                 mV: cute.Tensor,
                 mO: cute.Tensor,
                 softmax_scale: cutlass.Float32, # 1/sqrt(D)
-                stream: cuda.CUstream):
+                # stream: cuda.CUstream
+                ):
         self.dtype = mQ.element_type
         self.hdimk = cute.size(mQ, mode=[3])
         self.hdimv = cute.size(mV, mode=[3])
@@ -171,7 +172,7 @@ class FlashSM90:
             self.sQ_layout, self.sK_layout, self.sV_layout, self.sO_layout, 
             tiled_mma_qk, tiled_mma_pv, 
             n_block_max, softmax_scale_log2, 
-            StaticPersistentScheduler, tile_sched_params).launch(grid=grid_dim, block=[self.num_threads, 1, 1], cluster=[self.num_mcast, 1, 1], stream=stream, min_blocks_per_mp=1)
+            StaticPersistentScheduler, tile_sched_params).launch(grid=grid_dim, block=[self.num_threads, 1, 1], cluster=[self.num_mcast, 1, 1], min_blocks_per_mp=1)
     
     @cute.kernel
     def kernel(self, mQ: cute.Tensor, mK: cute.Tensor, mV: cute.Tensor, mO: cute.Tensor, 
@@ -416,6 +417,7 @@ class FlashSM90:
         
         # QKGemm
         p_acc = my_utils.gemm_zero_init(mma_qk, (self.tile_m, self.tile_n), tSrQ, tSrK, B_idx=kv_consumer_state.index, wg_wait=-1)
+        print('p_acc', p_acc)
         self.inter_wg_arrive()
         cute.nvgpu.warpgroup.wait_group(0)
         pipeline_k.consumer_release(kv_consumer_state)
@@ -426,6 +428,8 @@ class FlashSM90:
         tOrP_acc = cute.make_tensor(p_acc.iterator, my_utils.convert_layout_acc_frgA(p_acc.layout))
         my_utils.cvt_f16(tOrP_acc, tOrP)
         softmax.rescale_O(acc_o, row_scale)
+        print('tOrP_acc', tOrP_acc)
+        print('tOrP', tOrP)
 
         # PVGemm
         pipeline_v.consumer_wait(kv_consumer_state, pipeline_v.consumer_try_wait(kv_consumer_state))
