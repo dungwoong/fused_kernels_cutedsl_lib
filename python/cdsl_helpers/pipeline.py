@@ -45,8 +45,30 @@ class PipelineTmaAsync(PipelineTmaAsyncOg):
 # NOTE I moved num_consumer_warps up, if existing stuff stops working try switching the argument order to this function
 @cute.jit
 def make_tma_pipeline(
-    mbar_ptr: cute.Pointer, num_stages: int, num_bytes: int, num_consumer_warps: int, cta_layout_vmnk: cute.Layout, mcast_size: int,
+    mbar_ptr: cute.Pointer, num_stages: int, num_bytes: int, num_consumer_warps: int, cta_layout_vmnk: cute.Layout=None, mcast_size: int=1,
 ) -> pipeline.PipelineAsync:
+    num_producers = 1
+    num_consumers = num_consumer_warps * mcast_size  # IMPORTANT!!!
+
+    producer_group = pipeline.CooperativeGroup(pipeline.Agent.Thread, num_producers)
+    consumer_group = pipeline.CooperativeGroup(pipeline.Agent.Thread, num_consumers)
+    # NOTE: CTA layout is only used for syncing
+    # This used to be pipeline.PipelineTmaAsync
+    # but why not always support extra_tx
+    return PipelineTmaAsync.create(
+        barrier_storage=mbar_ptr,
+        num_stages=num_stages,
+        tx_count=num_bytes,
+        producer_group=producer_group,
+        consumer_group=consumer_group,
+        cta_layout_vmnk=cta_layout_vmnk,
+    )
+
+@cute.jit
+def make_tma_pipeline_alt(
+    smem, attr: str, num_stages: int, num_bytes: int, num_consumer_warps: int, cta_layout_vmnk: cute.Layout=None, mcast_size: int=1,
+) -> pipeline.PipelineAsync:
+    mbar_ptr = getattr(smem, attr).data_ptr()
     num_producers = 1
     num_consumers = num_consumer_warps * mcast_size  # IMPORTANT!!!
 

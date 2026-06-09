@@ -30,10 +30,10 @@ def get_smem_layout_row_major(
 def get_smem_struct():
     return type("SharedStorage", (), dict())
 
-def add_shared_tensor(ss, name_field, dtype, smem_layout, align):
+def smem_add_shared_tensor(ss, name_field, dtype, smem_layout, align):
     ss.__annotations__[name_field] = cute.struct.Align[cute.struct.MemRange[dtype, cute.cosize(smem_layout)], align]
 
-def add_barrier_array(ss, name_field, stages):
+def smem_add_barrier_array(ss, name_field, stages):
     # Don't forget to multiply stages by 2
     ss.__annotations__[name_field] = cute.struct.MemRange[cutlass.Int64, stages]
 
@@ -43,6 +43,14 @@ def smem_get_tensor(storage, field_name, layout: cute.ComposedLayout | cute.Layo
         return getattr(storage, field_name).get_tensor(layout.outer, swizzle=layout.inner)
     else:
         return getattr(storage, field_name).get_tensor(layout)
+
+def staged_tensor_sizes(dtype, *layouts):
+    """Assumes all layouts are 3D with the last dim as stage"""
+    sum_bytes = 0
+    for l in layouts:
+        assert cute.rank(l) == 3, "need rank-3 layouts for SMEM"
+        sum_bytes += cute.size_in_bytes(dtype, cute.slice_(l, (None, None, 0)))
+    return sum_bytes
 
 
 def memrange(dtype, smem_layout, align):
