@@ -20,7 +20,7 @@ if __name__ == '__main__':
     a = torch.randn((m, k), dtype=torch.bfloat16).to('cuda')
     b = torch.randn((n, k), dtype=torch.bfloat16).to('cuda')
     c = torch.empty((m, n), dtype=torch.bfloat16).to('cuda')
-    ref = a @ b.t()
+    ref = torch.nn.functional.relu(a @ b.t())
 
     gemm = Kernel()
     compiled_gemm = compile_cutedsl((a, b, c), gemm, False)
@@ -31,7 +31,13 @@ if __name__ == '__main__':
     def gemm_fn(a, b):
         c_ = torch.empty((a.shape[0], b.shape[0]), dtype=torch.bfloat16, device='cuda')
         compiled_gemm(a, b, c_)
+    
+    @torch.compile
+    def torch_fn(a, b):
+        return torch.nn.functional.relu(a @ b.t())
+        # return a @ b.t()
+
     my_ms = do_bench(lambda: gemm_fn(a, b))
     time.sleep(2)
-    torch_ms = do_bench(lambda: a @ b.t())
+    torch_ms = do_bench(lambda: torch_fn(a, b))
     print(f'{my_ms=}, {torch_ms=}, {torch_ms / my_ms}')
