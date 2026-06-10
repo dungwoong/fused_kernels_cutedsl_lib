@@ -9,15 +9,12 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", type=str, choices=["debug", "speed", "ncu"])
-    parser.add_argument("m", type=int, default=4096)
-    parser.add_argument("n", type=int, default=4096)
-    parser.add_argument("k", type=int, default=4096)
     args = parser.parse_args()
     IS_NCU = args.mode == 'ncu'
     IS_DEBUG = args.mode == 'debug'
     IS_SPEED = args.mode == 'speed'
 
-    m, n, k = args.m, args.n, args.k
+    m, n, k = 4096, 4096, 4096
     
     a = torch.randn((m, k), dtype=torch.bfloat16).to('cuda')
     b = torch.randn((n, k), dtype=torch.bfloat16).to('cuda')

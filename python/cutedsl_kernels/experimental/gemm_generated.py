@@ -3,6 +3,7 @@ from cutlass import cute
 from cdsl_helpers import shared
 from cdsl_helpers import pipeline
 from cdsl_helpers import mma
+from cdsl_helpers import store
 
 
 class Kernel:
@@ -13,10 +14,10 @@ class Kernel:
     acc_tiled_mma = mma.get_tiled_mma(cutlass.BFloat16, True, True, cutlass.Float32, 128, 256, False)
     a_tma_atom_1, a_tma_tensor_1 = shared.get_tma_tensor_and_atom(a, sA_layout, 128, 64)
     b_tma_atom_2, b_tma_tensor_2 = shared.get_tma_tensor_and_atom(b, sB_layout, 256, 64)
-    self.kernel(sA_layout, sB_layout, acc_tiled_mma, a_tma_tensor_1, a_tma_atom_1, b_tma_tensor_2, b_tma_atom_2).launch(grid=[32, 16, 1], block=384)
+    self.kernel(sA_layout, sB_layout, acc_tiled_mma, a_tma_atom_1, a_tma_tensor_1, b_tma_atom_2, b_tma_tensor_2).launch(grid=[32, 16, 1], block=384)
 
   @cute.kernel
-  def kernel(self, sA_layout, sB_layout, acc_tiled_mma, a_tma_tensor_1, a_tma_atom_1, b_tma_tensor_2, b_tma_atom_2):
+  def kernel(self, sA_layout, sB_layout, acc_tiled_mma, a_tma_atom_1, a_tma_tensor_1, b_tma_atom_2, b_tma_tensor_2):
     SharedStorage_t = shared.get_smem_struct()
     shared.smem_add_shared_tensor(SharedStorage_t, 'sA_ptr', cutlass.BFloat16, sA_layout, 1024)
     shared.smem_add_shared_tensor(SharedStorage_t, 'sB_ptr', cutlass.BFloat16, sB_layout, 1024)
@@ -42,6 +43,7 @@ class Kernel:
         pipe.consumer_release(state_c)
         state_c.advance()
       # TODO epilogue
+      store.mma_epilogue_tma(acc_tiled_mma, "tma_tensor", "tma_atom", "shared_tensor", acc, )
     if warpidx_ >= 8 and warpidx_ < 12:
       cute.arch.setmaxregister_decrease(40)
       if warpidx_ == 8:

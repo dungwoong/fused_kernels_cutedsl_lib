@@ -67,6 +67,15 @@ def get_tma_tensor_and_atom(tG, shared_layout, rows, cols, num_mcast=1):
         num_multicast=num_mcast,
     )
 
+def get_tma_epi_tensor_and_atom(tG, shared_layout_staged, rows, cols):
+    smem_layout = cute.slice_(shared_layout_staged, (None, None, 0))
+    d_cta_v_layout = cute.composition(cute.make_identity_layout(tG.shape), (rows, cols))
+    op = cute.nvgpu.cpasync.CopyBulkTensorTileS2GOp()
+    tma_atom_d, tma_tensor_d = cute.nvgpu.cpasync.make_tiled_tma_atom(
+        op, tG, smem_layout, d_cta_v_layout
+    )
+    return tma_atom_d, tma_tensor_d
+
 
 # TODO make sure the update works on everything
 # def tma_get_copy_fn(
