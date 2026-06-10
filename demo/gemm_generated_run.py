@@ -1,4 +1,5 @@
 import torch
+import time
 from triton.testing import do_bench
 from cutedsl_kernels.experimental.gemm_generated import Kernel
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
@@ -22,5 +23,14 @@ if __name__ == '__main__':
     ref = a @ b.t()
 
     gemm = Kernel()
-    compiled_gemm = compile_cutedsl((a, b), gemm, False)
-    compiled_gemm(a, b)
+    compiled_gemm = compile_cutedsl((a, b, c), gemm, False)
+    compiled_gemm(a, b, c)
+    print(c - ref)
+    print('allclose:', torch.allclose(ref, c))
+
+    def gemm_fn(a, b):
+        c_ = torch.empty((a.shape[0], b.shape[0]), dtype=torch.bfloat16, device='cuda')
+        compiled_gemm(a, b, c_)
+    print(do_bench(lambda: gemm_fn(a, b)))
+    time.sleep(2)
+    print(do_bench(lambda: a @ b.t()))

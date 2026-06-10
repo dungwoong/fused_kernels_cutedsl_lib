@@ -43,15 +43,17 @@ def mma_epilogue_tma(
     - shared tensor is rank 3 with stages at the end
     - out_dtype is bf16
     """
+    out_dtype = cutlass.BFloat16
+    epi_stage = cute.size(shared_tensor, mode=[2])
     
     epilogue_barrier = pipeline.NamedBarrier(barrier_id=int(1), num_threads=tiled_mma.size)
 
-    copy_atom_c = get_stmatrix(False, 4, cutlass.BFloat16)
+    copy_atom_C = get_stmatrix(False, 4, out_dtype)
     tiled_copy_r2s = cute.make_tiled_copy_C_atom(copy_atom_C, tiled_mma)
 
     gC = cute.local_tile(tma_tensor, (tile_shape_m, tile_shape_n), (tile_coord_m, tile_coord_n))
     thr_copy_r2s = tiled_copy_r2s.get_slice(tidx)
-    tRS_rD = thr_copy_r2s.partition_D(shared_tensor)
+    tRS_sD = thr_copy_r2s.partition_D(shared_tensor)
     tRS_rAcc = tiled_copy_r2s.retile(accumulators)
 
     rD_shape = cute.shape(thr_copy_r2s.partition_S(shared_tensor))
@@ -62,7 +64,7 @@ def mma_epilogue_tma(
     sepi_for_tma_partition = cute.group_modes(shared_tensor, 0, 2)
     tCgC_for_tma_partition = cute.zipped_divide(gC, (cute.size(shared_tensor, mode=[0]), cute.size(shared_tensor, mode=[1]))) # this just happens to be the right shape
     bSG_sD, bSG_gD = cute.nvgpu.cpasync.tma_partition(
-        epi_copy,
+        tma_atom,
         0,
         cute.make_layout(1),
         sepi_for_tma_partition,
@@ -81,9 +83,9 @@ def mma_epilogue_tma(
             tRS_rD[epi_v] = tRS_rAcc[epi_idx * size_tRS_rD + epi_v]
         
         # Type conversion
-        tRS_rD_out = cute.make_rmem_tensor_like(tRS_rD_layout, self.dtype)
+        tRS_rD_out = cute.make_rmem_tensor_like(tRS_rD_layout, out_dtype)
         acc_vec = tRS_rD.load()
-        tRS_rD_out.store(acc_vec.to(self.dtype))
+        tRS_rD_out.store(acc_vec.to(out_dtype))
 
         epi_buffer = epi_idx % cute.size(tRS_sD, mode=[3])
         # R2S stmatrix
@@ -99,10 +101,10 @@ def mma_epilogue_tma(
         gmem_coord = epi_tile_layout.get_hier_coord(epi_idx) # e.g. (0, 0) to (7, 0)
         if warp_idx == 0:
             cute.copy(
-                epi_copy,
+                tma_atom,
                 bSG_sD[(None, epi_buffer)],
                 bSG_gD[(None, gmem_coord)],
             )
             cute.arch.cp_async_bulk_commit_group()
-            cute.arch.cp_async_bulk_wait_group(self.epi_stage - 1, read=True)
+            cute.arch.cp_async_bulk_wait_group(epi_stage - 1, read=True)
         epilogue_barrier.arrive_and_wait() # Don't start next stmatrix yet
