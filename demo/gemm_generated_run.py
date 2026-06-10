@@ -31,6 +31,7 @@ if __name__ == '__main__':
     def gemm_fn(a, b):
         c_ = torch.empty((a.shape[0], b.shape[0]), dtype=torch.bfloat16, device='cuda')
         compiled_gemm(a, b, c_)
-    print(do_bench(lambda: gemm_fn(a, b)))
+    my_ms = do_bench(lambda: gemm_fn(a, b))
     time.sleep(2)
-    print(do_bench(lambda: a @ b.t()))
+    torch_ms = do_bench(lambda: a @ b.t())
+    print(f'{my_ms=}, {torch_ms=}, {torch_ms / my_ms}')

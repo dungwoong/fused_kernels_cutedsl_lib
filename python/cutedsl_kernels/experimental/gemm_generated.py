@@ -16,10 +16,10 @@ class Kernel:
     c_tma_atom_1, c_tma_tensor_1 = shared.get_tma_epi_tensor_and_atom(c, sC_layout, 128, 32)
     a_tma_atom_2, a_tma_tensor_2 = shared.get_tma_tensor_and_atom(a, sA_layout, 128, 64)
     b_tma_atom_3, b_tma_tensor_3 = shared.get_tma_tensor_and_atom(b, sB_layout, 256, 64)
-    self.kernel(sA_layout, sB_layout, sC_layout, acc_tiled_mma, c_tma_atom_1, c_tma_tensor_1, a_tma_atom_2, a_tma_tensor_2, b_tma_atom_3, b_tma_tensor_3).launch(grid=[32, 16, 1], block=384)
+    self.kernel(a, b, c, sA_layout, sB_layout, sC_layout, acc_tiled_mma, c_tma_atom_1, c_tma_tensor_1, a_tma_atom_2, a_tma_tensor_2, b_tma_atom_3, b_tma_tensor_3).launch(grid=[32, 16, 1], block=384)
 
   @cute.kernel
-  def kernel(self, sA_layout, sB_layout, sC_layout, acc_tiled_mma, c_tma_atom_1, c_tma_tensor_1, a_tma_atom_2, a_tma_tensor_2, b_tma_atom_3, b_tma_tensor_3):
+  def kernel(self, a: cute.Tensor, b: cute.Tensor, c: cute.Tensor, sA_layout, sB_layout, sC_layout, acc_tiled_mma, c_tma_atom_1, c_tma_tensor_1, a_tma_atom_2, a_tma_tensor_2, b_tma_atom_3, b_tma_tensor_3):
     SharedStorage_t = shared.get_smem_struct()
     shared.smem_add_shared_tensor(SharedStorage_t, 'sA_ptr', cutlass.BFloat16, sA_layout, 1024)
     shared.smem_add_shared_tensor(SharedStorage_t, 'sB_ptr', cutlass.BFloat16, sB_layout, 1024)
@@ -46,7 +46,6 @@ class Kernel:
         acc_accumulate = True
         pipe.consumer_release(state_c)
         state_c.advance()
-      # TODO epilogue
       store.mma_epilogue_tma(acc_tiled_mma, c_tma_tensor_1, c_tma_atom_1, sC, acc, 128, 256, cute.arch.block_idx()[0], cute.arch.block_idx()[1], tidx_, warpidx_, cutlass.Float32)
     if warpidx_ >= 8 and warpidx_ < 12:
       cute.arch.setmaxregister_decrease(40)
