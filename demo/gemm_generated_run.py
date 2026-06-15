@@ -2,6 +2,7 @@ import torch
 import time
 from triton.testing import do_bench
 from cutedsl_kernels.experimental.gemm_generated import Kernel
+from cutedsl_kernels.experimental.gemm_persistent_4096 import Kernel as GemmPersistent
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 
 
@@ -20,10 +21,14 @@ if __name__ == '__main__':
     a = torch.randn((m, k), dtype=torch.bfloat16).to('cuda')
     b = torch.randn((n, k), dtype=torch.bfloat16).to('cuda')
     c = torch.empty((m, n), dtype=torch.bfloat16).to('cuda')
-    ref = torch.nn.functional.relu(a @ b.t())
+    # ref = torch.nn.functional.relu(a @ b.t())
+    ref = a @ b.t()
 
-    gemm = Kernel()
+    print('Reference finished')
+    gemm = GemmPersistent()
+    print('Compiling kernel')
     compiled_gemm = compile_cutedsl((a, b, c), gemm, False)
+    print('Running gemm')
     compiled_gemm(a, b, c)
     print(c - ref)
     print('allclose:', torch.allclose(ref, c))
@@ -34,8 +39,8 @@ if __name__ == '__main__':
     
     @torch.compile
     def torch_fn(a, b):
-        return torch.nn.functional.relu(a @ b.t())
-        # return a @ b.t()
+        # return torch.nn.functional.relu(a @ b.t())
+        return a @ b.t()
 
     my_ms = do_bench(lambda: gemm_fn(a, b))
     time.sleep(2)
