@@ -147,6 +147,18 @@ def tma_get_copy_fn(
     return (copy_tma if not single_stage else copy_tma_single_stage) if not src_is_smem else (store_tma if not single_stage else store_tma_single_stage), s, g
 
 
+@cute.jit
+def get_multicast_info(cluster_layout_shape, mode):
+    """Returns mask, cta coord(along mode) and cta layout(along mode)"""
+    if cutlass.const_expr(cluster_layout_shape is None or mode < 0 or cluster_layout_shape[mode] == 1):
+        return 0, 0, None
+    cluster_layout = cute.make_layout(cluster_layout_shape)
+    cta_rank_in_cluster = cute.arch.make_warp_uniform(cute.arch.block_idx_in_cluster())
+    block_in_cluster_coord = cluster_layout.get_flat_coord(cta_rank_in_cluster)
+    mask = cute.make_layout_image_mask(cluster_layout, block_in_cluster_coord, mode=mode)
+    return mask, block_in_cluster_coord[mode], cute.make_layout((cluster_layout_shape[mode],))
+
+
 # @cute.jit
 def tma_copy(
     tma_atom: cute.CopyAtom,
