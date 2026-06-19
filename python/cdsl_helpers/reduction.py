@@ -26,3 +26,23 @@ def row_sum_square_mixed_types(a: cute.Tensor, acc: cute.Tensor, accum_dtype: Ty
         for i in cutlass.range_constexpr(cute.size(a_row.shape)):
             tmp += (a_row[i] * a_row[i])
         acc[r] += tmp
+
+@cute.jit
+def warp_sum_row_mma_layout(
+    val: cute.TensorSSA | cute.Numeric,
+    ):
+    """
+    Assumes MMA acc so each 4 threads holds the same row
+    
+    This can take in ANY layout, but reduces only across
+    groups of 4 threads
+    """
+    if cutlass.const_expr(isinstance(val, cute.TensorSSA)):
+        res = cute.make_rmem_tensor(val.shape, val.dtype)
+        for i in cutlass.range_constexpr(cute.size(val.shape)):
+            res[i] = warp_sum_row_mma_layout(val[i])
+        return res.load()
+    else:
+        for i in cutlass.range_constexpr(2):
+            val = val + cute.arch.shuffle_sync_bfly(val, offset=1 << i)
+    return val

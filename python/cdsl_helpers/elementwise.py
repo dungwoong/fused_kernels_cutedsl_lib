@@ -33,8 +33,29 @@ def _relu(x: cute.TensorSSA | cutlass.Float32) -> cute.TensorSSA | cutlass.Float
         return _fmax(x, 0)
 
 @cute.jit
-def relu(x: cute.Tensor):
+def relu_f32(x: cute.Tensor):
     assert x.element_type == cutlass.Float32, "relu only supports fp32 input"
     out = cute.make_rmem_tensor_like(x, cutlass.Float32)
     out.store(_relu(x.load()))
     return out
+
+@cute.jit
+def const_div(x: cute.TensorSSA, val: int) -> cute.TensorSSA:
+    out = cute.make_rmem_tensor(x.shape, x.dtype)
+    for i in cutlass.range_constexpr(cute.size(x.shape)):
+        out[i] = x[i] / val
+    return out.load()
+
+@cute.jit
+def const_add(x: cute.TensorSSA, val: int) -> cute.TensorSSA:
+    out = cute.make_rmem_tensor(x.shape, x.dtype)
+    for i in cutlass.range_constexpr(cute.size(x.shape)):
+        out[i] = x[i] + val
+    return out.load()
+
+@cute.jit
+def const_rsqrt(x: cute.TensorSSA, val: int) -> cute.TensorSSA:
+    out = cute.make_rmem_tensor(x.shape, x.dtype)
+    for i in cutlass.range_constexpr(cute.size(x.shape)):
+        out[i] = cute.math.rsqrt(x[i], fastmath=True)
+    return out.load()
