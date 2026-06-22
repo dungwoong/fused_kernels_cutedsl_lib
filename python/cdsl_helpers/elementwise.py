@@ -54,7 +54,7 @@ def const_add(x: cute.TensorSSA, val: int) -> cute.TensorSSA:
     return out.load()
 
 @cute.jit
-def const_rsqrt(x: cute.TensorSSA, val: int) -> cute.TensorSSA:
+def const_rsqrt(x: cute.TensorSSA) -> cute.TensorSSA:
     out = cute.make_rmem_tensor(x.shape, x.dtype)
     for i in cutlass.range_constexpr(cute.size(x.shape)):
         out[i] = cute.math.rsqrt(x[i], fastmath=True)
