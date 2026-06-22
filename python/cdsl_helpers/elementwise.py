@@ -8,6 +8,11 @@ import cutlass.utils.hopper_helpers as sm90_utils
 from cutlass.cutlass_dsl import Numeric, dsl_user_op, T
 from cutlass.utils import LayoutEnum
 from cutlass._mlir.dialects import nvvm, llvm, arith
+from . import layout as my_layout
+
+"""
+This also contains broadcast ops like elementwise div
+"""
 
 @dsl_user_op
 def _fmax(a: float | cutlass.Float32, b: float | cutlass.Float32, c: float | cutlass.Float32 | None = None, *, loc=None, ip=None) -> cutlass.Float32:
@@ -40,17 +45,32 @@ def relu_f32(x: cute.Tensor):
     return out
 
 @cute.jit
-def const_div(x: cute.TensorSSA, val: int) -> cute.TensorSSA:
+def const_div(x: cute.TensorSSA, val: float) -> cute.TensorSSA:
     out = cute.make_rmem_tensor(x.shape, x.dtype)
     for i in cutlass.range_constexpr(cute.size(x.shape)):
         out[i] = x[i] / val
     return out.load()
 
 @cute.jit
-def const_add(x: cute.TensorSSA, val: int) -> cute.TensorSSA:
+def const_mul(x: cute.TensorSSA, val: float) -> cute.TensorSSA:
+    out = cute.make_rmem_tensor(x.shape, x.dtype)
+    for i in cutlass.range_constexpr(cute.size(x.shape)):
+        out[i] = x[i] * val
+    return out.load()
+
+@cute.jit
+def const_add(x: cute.TensorSSA, val: float) -> cute.TensorSSA:
     out = cute.make_rmem_tensor(x.shape, x.dtype)
     for i in cutlass.range_constexpr(cute.size(x.shape)):
         out[i] = x[i] + val
+    return out.load()
+
+@cute.jit
+def const_mul_add(x: cute.TensorSSA, mul_val: float, add_val: float) -> cute.TensorSSA:
+    """This is unnecessary if you do elementwise.mul then elementwise.add"""
+    out = cute.make_rmem_tensor(x.shape, x.dtype)
+    for i in cutlass.range_constexpr(cute.size(x.shape)):
+        out[i] = (x[i] * mul_val) + add_val
     return out.load()
 
 @cute.jit
@@ -59,3 +79,12 @@ def const_rsqrt(x: cute.TensorSSA) -> cute.TensorSSA:
     for i in cutlass.range_constexpr(cute.size(x.shape)):
         out[i] = cute.math.rsqrt(x[i], fastmath=True)
     return out.load()
+
+@cute.jit
+def row_mul(acc: cute.Tensor, scaler: cute.Tensor):
+    new_acc = cute.make_rmem_tensor_like(acc, acc.element_type)
+    a_mn = my_layout.make_acc_tensor_mn_view(acc, False)
+    new_acc_mn = my_layout.make_acc_tensor_mn_view(new_acc, False)
+    for r in cutlass.range_constexpr(cute.size(scaler)):
+        new_acc_mn[r, None].store(a_mn[r, None].load() * scaler[r])
+    return new_acc

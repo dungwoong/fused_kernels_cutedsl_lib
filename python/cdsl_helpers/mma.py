@@ -33,6 +33,32 @@ def get_acc(tiled_mma: cute.TiledMma, tile_m: int, tile_n: int, dtype: Type[cutl
     acc = cute.make_rmem_tensor(acc_shape, dtype)
     return acc
 
+@cute.jit
+def copy_a_wgmma(tidx: cutlass.Int32, tiled_mma: cute.TiledMma, sA: cute.Tensor, tile_m: int, tile_n: int, dtype: Type[cutlass.Numeric]):
+    """
+    sA should be ONLY a single stage(2D tensor)
+    Returns the copy in an mma-ready format
+    
+    no trans ldmatrix
+    """
+    copy_atom_A = cute.make_copy_atom(
+        cute.nvgpu.warp.LdMatrix8x8x16bOp(
+            False,
+            4,
+        ),
+        dtype,
+    )
+    tiled_copy_s2r = cute.make_tiled_copy_A(copy_atom_A, tiled_mma)
+    thr_copy_s2r = tiled_copy_s2r.get_slice(tidx)
+    s2r_sA = thr_copy_s2r.partition_S(sA)
+    s2r_r_shape = tiled_mma.partition_shape_A(
+        (tile_m, tile_n)
+    )
+    a_regs_mma = cute.make_rmem_tensor(s2r_r_shape, dtype)
+    a_regs = thr_copy_s2r.retile(a_regs_mma)
+    cute.copy(tiled_copy_s2r, s2r_sA, a_regs)
+    return a_regs_mma
+
 
 @cute.jit
 def gemm(

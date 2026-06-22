@@ -1,5 +1,8 @@
 import cutlass
 from cutlass import cute
+from typing import Type
+from . import layout as my_layout
+
 
 @cute.jit
 def make_mma_A_reduction_tensor(tiled_mma: cute.TiledMma, tile_m: int, tile_n: int, dtype: Type[cutlass.Numeric]):
@@ -13,15 +16,15 @@ def make_mma_A_reduction_tensor(tiled_mma: cute.TiledMma, tile_m: int, tile_n: i
     return acc
 
 @cute.jit
-def row_sum_square_mixed_types(a: cute.Tensor, acc: cute.Tensor, accum_dtype: Type[cutlass.Numeric]):
+def row_sum_square_mixed_types(a: cute.Tensor, acc: cute.Tensor, intermediate_accum_dtype: Type[cutlass.Numeric]):
     """
-    First accumulates rowsum of A in its datatype(e.g. bf16)
+    First accumulates rowsum of A in <intermediate_accum_dtype>
     Then casts and increments accumulator
     """
     a_mn = my_layout.make_acc_tensor_mn_view(a, False) # ((2, MMA_M), (2, V, MMA_N), ...) rows cols
     for r in cutlass.range_constexpr(cute.size(acc)):
-        tmp = accum_dtype(0.0)
-        a_row = a_mn[r, None].load().to(accum_dtype)
+        tmp = intermediate_accum_dtype(0.0)
+        a_row = a_mn[r, None].load().to(intermediate_accum_dtype)
         # for i in cutlass.range_constexpr(cute.size(a_row.shape)):
         for i in cutlass.range_constexpr(cute.size(a_row.shape)):
             tmp += (a_row[i] * a_row[i])
