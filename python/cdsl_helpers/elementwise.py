@@ -8,7 +8,7 @@ import cutlass.utils.hopper_helpers as sm90_utils
 from cutlass.cutlass_dsl import Numeric, dsl_user_op, T
 from cutlass.utils import LayoutEnum
 from cutlass._mlir.dialects import nvvm, llvm, arith
-from . import layout as my_layout
+from . import layout as my_layout, _quack_activation
 
 """
 This also contains broadcast ops like elementwise div
@@ -87,4 +87,18 @@ def row_mul(acc: cute.Tensor, scaler: cute.Tensor):
     new_acc_mn = my_layout.make_acc_tensor_mn_view(new_acc, False)
     for r in cutlass.range_constexpr(cute.size(scaler)):
         new_acc_mn[r, None].store(a_mn[r, None].load() * scaler[r])
+    return new_acc
+
+@cute.jit
+def silu(acc: cute.TensorSSA):
+    new_acc = cute.make_rmem_tensor_like(acc, acc.element_type)
+    for r in cutlass.range_constexpr(cute.size(new_acc)):
+        new_acc[r] = _quack_activation.silu(acc[r])
+    return new_acc.load()
+
+@cute.jit
+def tilewise_mul(a: cute.Tensor, b: cute.Tensor): # assume to have same layout
+    new_acc = cute.make_rmem_tensor_like(a, a.element_type)
+    for r in cutlass.range_constexpr(cute.size(new_acc)):
+        new_acc[r] = a[r] * b[r]
     return new_acc
