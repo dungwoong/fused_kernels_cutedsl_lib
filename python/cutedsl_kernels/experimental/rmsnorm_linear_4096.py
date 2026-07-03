@@ -47,12 +47,9 @@ class Kernel:
         acc = mma.get_acc(acc_tiled_mma, 128, 256, cutlass.Float32)
         acc_accumulate = False
         sum_acc = reduction.make_mma_A_reduction_tensor(acc_tiled_mma, 128, 256, cutlass.Float32)
-        print('acc:', acc)
-        print('sum_acc:', sum_acc)
         for k in cutlass.range(0, 64, 1):
           pipe.consumer_wait(state_c, pipe.consumer_try_wait(state_c))
           a_regs = mma.copy_a_wgmma(tidx_, acc_tiled_mma, sA[None, None, state_c.index], 128, 64, cutlass.BFloat16)
-          print('a_regs:', a_regs)
           mma.accumulating_gemm_rs(tidx_, acc_tiled_mma, a_regs, sB, acc, state_c, acc_accumulate, -1)
           acc_accumulate = True
           reduction.row_sum_square_mixed_types(a_regs, sum_acc, cutlass.BFloat16)

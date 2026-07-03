@@ -4,6 +4,7 @@ from triton.testing import do_bench
 from cutedsl_kernels.experimental.gemm_generated import Kernel
 from cutedsl_kernels.experimental.gemm_persistent_4096 import Kernel as GemmPersistent
 from cutedsl_kernels.experimental.rmsnorm_linear_4096 import Kernel as RMSLinKernel
+from cutedsl_kernels.experimental.rmsnorm_linear_high_level_generated import Kernel as HLKernel
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 
 EPS = 1e-5
@@ -45,7 +46,8 @@ if __name__ == '__main__':
     ref = compiled_torch(a, b)
 
     print('Reference finished')
-    gemm = RMSLinKernel()
+    # gemm = RMSLinKernel()
+    gemm = HLKernel()
     print('Compiling kernel')
     compiled_gemm = compile_cutedsl((a, b, c), gemm, False)
     print('Running gemm')

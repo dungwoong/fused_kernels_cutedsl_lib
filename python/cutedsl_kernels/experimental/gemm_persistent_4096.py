@@ -51,7 +51,7 @@ class Kernel:
           acc_accumulate = True
           pipe.consumer_release(state_c)
           state_c.advance()
-        newacc = elementwise.relu(acc)
+        newacc = elementwise.relu_f32(acc)
         store.mma_epilogue_tma(acc_tiled_mma, c_tma_tensor_1, c_tma_atom_1, sC, acc, 128, 256, sched_coord[0], sched_coord[1], tidx_, warpidx_, cutlass.Float32)
     if warpidx_ >= 8 and warpidx_ < 12:
       cute.arch.setmaxregister_decrease(40)

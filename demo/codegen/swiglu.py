@@ -2,6 +2,7 @@ import torch
 import time
 from triton.testing import do_bench
 from cutedsl_kernels.experimental.swiglu import Kernel
+from cutedsl_kernels.experimental.swiglu_high_level_generated import Kernel as HLKernel
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 
 EPS = 1e-5
@@ -45,6 +46,7 @@ if __name__ == '__main__':
     ref = compiled_torch(a, b, b1)
 
     print('Reference finished')
+    # gemm = HLKernel()
     gemm = Kernel()
     print('Compiling kernel')
     compiled_gemm = compile_cutedsl((a, b, b1, c), gemm, False)

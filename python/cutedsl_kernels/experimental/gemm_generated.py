@@ -47,7 +47,8 @@ class Kernel:
         acc_accumulate = True
         pipe.consumer_release(state_c)
         state_c.advance()
-      newacc = elementwise.relu(acc) # when lowering, registers will be reused so it's ok
+      # newacc = elementwise.relu_f32(acc) # when lowering, registers will be reused so it's ok
+      newacc = acc
       store.mma_epilogue_tma(acc_tiled_mma, c_tma_tensor_1, c_tma_atom_1, sC, newacc, 128, 256, cute.arch.block_idx()[0], cute.arch.block_idx()[1], tidx_, warpidx_, cutlass.Float32)
     if warpidx_ >= 8 and warpidx_ < 12:
       cute.arch.setmaxregister_decrease(40)
