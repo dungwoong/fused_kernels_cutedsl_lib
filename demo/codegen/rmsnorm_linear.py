@@ -5,6 +5,10 @@ from cutedsl_kernels.experimental.gemm_generated import Kernel
 from cutedsl_kernels.experimental.gemm_persistent_4096 import Kernel as GemmPersistent
 from cutedsl_kernels.experimental.rmsnorm_linear_4096 import Kernel as RMSLinKernel
 from cutedsl_kernels.experimental.rmsnorm_linear_high_level_generated import Kernel as HLKernel
+
+from cutedsl_kernels.experimental_autogen.rms_c2_mnk4096 import Kernel as RmsC2Mnk4096
+from cutedsl_kernels.experimental_autogen.rms_c2_n1024_mk4096 import Kernel as RmsC2N1024Mk4096
+
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 
 EPS = 1e-5
@@ -27,9 +31,17 @@ if __name__ == '__main__':
     parser.add_argument("m", type=int, default=4096)
     parser.add_argument("n", type=int, default=1024)
     parser.add_argument("k", type=int, default=4096)
+    parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=0)
     args = parser.parse_args()
 
     m, n, k = args.m, args.n, args.k
+    if args.mode == 1:
+        print('Overriding dim')
+        m = n = k = 4096
+    if args.mode == 2:
+        print('Overriding dim')
+        m = k = 4096
+        n = 1024
     
     htype = torch.float64
     dtype = torch.bfloat16
@@ -45,8 +57,15 @@ if __name__ == '__main__':
     ref = compiled_torch(a, b)
 
     print('Reference finished')
+    gemm_classes = {
+        0: HLKernel, # default
+        1: RmsC2Mnk4096,
+        2: RmsC2N1024Mk4096
+    }
+    GemmCls = gemm_classes[args.mode]
     # gemm = RMSLinKernel()
-    gemm = HLKernel()
+    # gemm = HLKernel()
+    gemm = GemmCls()
     print('Compiling kernel')
     compiled_gemm = compile_cutedsl((a, b, c), gemm, False)
     print('Running gemm')

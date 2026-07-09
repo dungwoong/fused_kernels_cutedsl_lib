@@ -45,8 +45,8 @@ if __name__ == '__main__':
     ref = compiled_torch(a, b, b1)
 
     print('Reference finished')
-    # gemm = HLKernel()
-    gemm = Kernel()
+    gemm = HLKernel()
+    # gemm = Kernel()
     print('Compiling kernel')
     compiled_gemm = compile_cutedsl((a, b, b1, c), gemm, False)
     print('Running gemm')
