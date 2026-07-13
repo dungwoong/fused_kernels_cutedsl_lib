@@ -15,15 +15,15 @@ class Kernel:
     sB_layout = shared.get_smem_layout_row_major(cutlass.BFloat16, 128, 64, 3)
     sC_layout = shared.get_smem_layout_row_major(cutlass.BFloat16, 128, 32, 2)
     acc_tiled_mma = mma.get_tiled_mma(cutlass.BFloat16, True, True, cutlass.Float32, 128, 128, False)
-    tiled_mma_131369589144162923838234249411099524526 = mma.get_tiled_mma(cutlass.BFloat16, True, True, cutlass.Float32, 128, 128, False)
-    tiled_mma_319017882738504737266986469887086607702 = mma.get_tiled_mma(cutlass.BFloat16, True, True, cutlass.Float32, 128, 128, False)
+    tiled_mma_178 = mma.get_tiled_mma(cutlass.BFloat16, True, True, cutlass.Float32, 128, 128, False)
+    tiled_mma_200 = mma.get_tiled_mma(cutlass.BFloat16, True, True, cutlass.Float32, 128, 128, False)
     c_tma_atom_1, c_tma_tensor_1 = shared.get_tma_epi_tensor_and_atom(c, sC_layout, 128, 32)
     a_tma_atom_2, a_tma_tensor_2 = shared.get_tma_tensor_and_atom(a, sA_layout, 128, 64, 2)
     b_tma_atom_3, b_tma_tensor_3 = shared.get_tma_tensor_and_atom(b, sB_layout, 128, 64, 2)
-    self.kernel(a, b, c, sA_layout, sB_layout, sC_layout, acc_tiled_mma, tiled_mma_131369589144162923838234249411099524526, tiled_mma_319017882738504737266986469887086607702, c_tma_atom_1, c_tma_tensor_1, a_tma_atom_2, a_tma_tensor_2, b_tma_atom_3, b_tma_tensor_3).launch(grid=[2, 2, 33], block=384, cluster=(2, 2, 1))
+    self.kernel(a, b, c, sA_layout, sB_layout, sC_layout, acc_tiled_mma, tiled_mma_178, tiled_mma_200, c_tma_atom_1, c_tma_tensor_1, a_tma_atom_2, a_tma_tensor_2, b_tma_atom_3, b_tma_tensor_3).launch(grid=[2, 2, 33], block=384, cluster=(2, 2, 1))
 
   @cute.kernel
-  def kernel(self, a: cute.Tensor, b: cute.Tensor, c: cute.Tensor, sA_layout, sB_layout, sC_layout, acc_tiled_mma, tiled_mma_131369589144162923838234249411099524526, tiled_mma_319017882738504737266986469887086607702, c_tma_atom_1, c_tma_tensor_1, a_tma_atom_2, a_tma_tensor_2, b_tma_atom_3, b_tma_tensor_3):
+  def kernel(self, a: cute.Tensor, b: cute.Tensor, c: cute.Tensor, sA_layout, sB_layout, sC_layout, acc_tiled_mma, tiled_mma_178, tiled_mma_200, c_tma_atom_1, c_tma_tensor_1, a_tma_atom_2, a_tma_tensor_2, b_tma_atom_3, b_tma_tensor_3):
     SharedStorage_t = shared.get_smem_struct()
     shared.smem_add_shared_tensor(SharedStorage_t, 'sA_ptr', cutlass.BFloat16, sA_layout, 1024)
     shared.smem_add_shared_tensor(SharedStorage_t, 'sB_ptr', cutlass.BFloat16, sB_layout, 1024)
@@ -49,12 +49,12 @@ class Kernel:
         acc_accumulate = False
         for k in cutlass.range(0, 64, 1):
           pipe.consumer_wait(state_c, pipe.consumer_try_wait(state_c))
-          mma.accumulating_gemm_ss(tidx_, tiled_mma_131369589144162923838234249411099524526, sA, sB, acc, state_c, state_c, acc_accumulate, 0)
+          mma.accumulating_gemm_ss(tidx_, tiled_mma_178, sA, sB, acc, state_c, state_c, acc_accumulate, 0)
           acc_accumulate = True
           pipe.consumer_release(state_c)
           state_c.advance()
         newacc = elementwise.relu_f32(acc)
-        store.mma_epilogue_tma(tiled_mma_319017882738504737266986469887086607702, c_tma_tensor_1, c_tma_atom_1, sC, acc, 128, 128, sched_coord[0], sched_coord[1], tidx_, warpidx_, cutlass.Float32)
+        store.mma_epilogue_tma(tiled_mma_200, c_tma_tensor_1, c_tma_atom_1, sC, acc, 128, 128, sched_coord[0], sched_coord[1], tidx_, warpidx_, cutlass.Float32)
     if warpidx_ >= 8 and warpidx_ < 12:
       cute.arch.setmaxregister_decrease(40)
       if warpidx_ == 8:
