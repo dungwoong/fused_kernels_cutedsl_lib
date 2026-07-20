@@ -3,6 +3,7 @@ import time
 from triton.testing import do_bench
 from cutedsl_kernels.experimental.swiglu import Kernel
 from cutedsl_kernels.experimental.swiglu_high_level_generated import Kernel as HLKernel
+from cutedsl_kernels.experimental.swiglu_hel import Kernel as HelKernel
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 
 EPS = 1e-5
@@ -25,6 +26,7 @@ if __name__ == '__main__':
     parser.add_argument("m", type=int, default=4096)
     parser.add_argument("n", type=int, default=4096)
     parser.add_argument("k", type=int, default=4096)
+    parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=0)
     args = parser.parse_args()
 
     m, n, k = args.m, args.n, args.k
@@ -45,7 +47,13 @@ if __name__ == '__main__':
     ref = compiled_torch(a, b, b1)
 
     print('Reference finished')
-    gemm = HLKernel()
+    gemm_classes = {
+        0: HLKernel,
+        1: Kernel,
+        2: HelKernel,
+    }
+    GemmCls = gemm_classes[args.mode]
+    gemm = GemmCls()
     # gemm = Kernel()
     print('Compiling kernel')
     compiled_gemm = compile_cutedsl((a, b, b1, c), gemm, False)

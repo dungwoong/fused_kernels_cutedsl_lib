@@ -46,9 +46,10 @@ if __name__ == '__main__':
     b1 = torch.randn((n, k), dtype=torch.bfloat16).to('cuda')
     bb1 = torch.concat((b, b1), dim=0).to('cuda')
 
-    ms_kernel = do_bench(lambda: torch_swiglu(a, bb1))
-    time.sleep(2)
-    ms_gemm = do_bench(lambda: torch_mm(a, bb1))
+    torch_swiglu(a, bb1)
+    # ms_kernel = do_bench(lambda: torch_swiglu(a, bb1))
+    # time.sleep(2)
+    # ms_gemm = do_bench(lambda: torch_mm(a, bb1))
 
-    print(f"{ms_kernel=}, {ms_gemm=}")
-    print(f"{ms_kernel / ms_gemm}")
+    # print(f"{ms_kernel=}, {ms_gemm=}")
+    # print(f"{ms_kernel / ms_gemm}")

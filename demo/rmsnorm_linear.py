@@ -131,7 +131,9 @@ if __name__ == '__main__':
         ref_rmse = get_rmse(ref64, ref.to(htype))
         my_rmse = get_rmse(ref64, c.to(htype))
         my_old_rmse = get_rmse(ref64, c_old.to(htype)) if DO_OLD else 'n/a'
+        max_abs_err = (ref64 - c.to(htype)).max().item()
         print(f'{ref_rmse=}, {my_rmse=}, {my_old_rmse=}')
+        print(f'{max_abs_err=}')
     
     if IS_SPEED:
         def cdsl_kernel(a_: torch.Tensor, b_: torch.Tensor):

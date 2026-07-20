@@ -48,3 +48,22 @@ def convert_layout_acc_mn(acc_layout: cute.Layout, transpose: bool = False) -> c
 
 def make_acc_tensor_mn_view(acc: cute.Tensor, transpose: bool = False) -> cute.Tensor:
     return cute.make_tensor(acc.iterator, convert_layout_acc_mn(acc.layout, transpose=transpose))
+
+@cute.jit
+def convert_layout_acc_frgA(acc_layout: cute.Layout) -> cute.Layout:
+    l = cute.logical_divide(
+        acc_layout, ((None, None, 2), None, None)
+    )  # ((2, 2, (2, N / 16)), MMA_M, MMA_N)
+    rA_mma_view = cute.make_layout(
+        (
+            (l.shape[0][0], l.shape[0][1], l.shape[0][2][0]),
+            l.shape[1],
+            (l.shape[0][2][1], l.shape[2]),
+        ),
+        stride=(
+            (l.stride[0][0], l.stride[0][1], l.stride[0][2][0]),
+            l.stride[1],
+            (l.stride[0][2][1], l.stride[2]),
+        ),
+    )
+    return rA_mma_view
