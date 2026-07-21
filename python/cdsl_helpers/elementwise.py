@@ -90,6 +90,15 @@ def row_mul(acc: cute.Tensor, scaler: cute.Tensor):
     return new_acc
 
 @cute.jit
+def row_bcast_sub(acc: cute.Tensor, vec: cute.Tensor):
+    new_acc = cute.make_rmem_tensor_like(acc, acc.element_type)
+    a_mn = my_layout.make_acc_tensor_mn_view(acc, False)
+    new_acc_mn = my_layout.make_acc_tensor_mn_view(new_acc, False)
+    for r in cutlass.range_constexpr(cute.size(vec)):
+        new_acc_mn[r, None].store(a_mn[r, None].load() - vec[r])
+    return new_acc
+
+@cute.jit
 def silu(acc: cute.TensorSSA):
     new_acc = cute.make_rmem_tensor_like(acc, acc.element_type)
     for r in cutlass.range_constexpr(cute.size(new_acc)):
@@ -104,6 +113,10 @@ def rcp(acc: cute.TensorSSA) -> cute.TensorSSA:
     return new_acc.load()
 
 @cute.jit
+def copy_elemwise(acc: cute.TensorSSA) -> cute.TensorSSA:
+    return acc
+
+@cute.jit
 def exp2f(acc: cute.TensorSSA) -> cute.TensorSSA:
     new_acc = cute.make_rmem_tensor_like(acc, acc.element_type)
     for r in cutlass.range_constexpr(cute.size(new_acc)):
@@ -115,4 +128,12 @@ def tilewise_mul(a: cute.Tensor, b: cute.Tensor): # assume to have same layout
     new_acc = cute.make_rmem_tensor_like(a, a.element_type)
     for r in cutlass.range_constexpr(cute.size(new_acc)):
         new_acc[r] = a[r] * b[r]
+    return new_acc
+
+@cute.jit
+def tilewise_sub(a: cute.Tensor, b: cute.Tensor): # assume to have same layout
+    # returns A - B
+    new_acc = cute.make_rmem_tensor_like(a, a.element_type)
+    for r in cutlass.range_constexpr(cute.size(new_acc)):
+        new_acc[r] = a[r] - b[r]
     return new_acc
