@@ -48,7 +48,6 @@ class Kernel:
     sQ = shared.smem_get_tensor(smem_, 'sQ_ptr', sQ_layout)
     sK = shared.smem_get_tensor(smem_, 'sK_ptr', sK_layout)
     sV = shared.smem_get_tensor(smem_, 'sV_ptr', sV_layout)
-    sVt = layout.transpose_view(sV)
     sO = shared.smem_get_tensor(smem_, 'sO_ptr', sO_layout)
     pipe_q = pipeline.make_tma_pipeline_alt(smem_, 'pipe_q_ptr', 1, shared.staged_tensor_sizes(cutlass.BFloat16, sQ_layout), 8, None, 1)
     pipe_k = pipeline.make_tma_pipeline_alt(smem_, 'pipe_k_ptr', 2, shared.staged_tensor_sizes(cutlass.BFloat16, sK_layout), 8, None, 1)
@@ -83,7 +82,7 @@ class Kernel:
           reduction.row_sum_mixed_types(p_exp_frgA, sum_acc, cutlass.Float32)
           rt_240 = conversion.cvt_f16(p_exp_frgA, cutlass.BFloat16)
           pipe_v.consumer_wait(state_c_v, pipe_v.consumer_try_wait(state_c_v))
-          mma.accumulating_gemm_rs(tidx_, tiled_mma_100, rt_240, sVt, pv_acc, state_c_v, pv_acc_accumulate, 0)
+          mma.accumulating_gemm_rs(tidx_, tiled_mma_100, rt_240, layout.transpose_view(sV), pv_acc, state_c_v, pv_acc_accumulate, 0)
           pv_acc_accumulate = True
           pipe_v.consumer_release(state_c_v)
           state_c_k.advance()

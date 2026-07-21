@@ -4,6 +4,7 @@ from triton.testing import do_bench
 from cutedsl_kernels.experimental.attn import Kernel
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from contextlib import nullcontext
 
 def get_rmse(ref: torch.Tensor, o: torch.Tensor):
     assert o.dtype == ref.dtype
@@ -46,6 +47,7 @@ if __name__ == '__main__':
         attn_compiled(q, k, v, o_)
     
     with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
+    # with nullcontext():
         my_ms = do_bench(lambda: cdsl_fn(q, k, v))
         time.sleep(2)
         torch_ms = do_bench(lambda: torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)))
