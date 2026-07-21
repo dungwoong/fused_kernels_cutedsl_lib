@@ -84,4 +84,5 @@ def make_tma_pipeline_alt(
         producer_group=producer_group,
         consumer_group=consumer_group,
         cta_layout_vmnk=cta_layout_vmnk,
+        defer_sync=False
     )
