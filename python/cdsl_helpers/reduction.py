@@ -31,6 +31,17 @@ def row_sum_square_mixed_types(a: cute.Tensor, acc: cute.Tensor, intermediate_ac
         acc[r] += tmp
 
 @cute.jit
+def row_sum_mixed_types(a: cute.Tensor, acc: cute.Tensor, intermediate_accum_dtype: Type[cutlass.Numeric]):
+    a_mn = my_layout.make_acc_tensor_mn_view(a, False) # ((2, MMA_M), (2, V, MMA_N), ...) rows cols
+    for r in cutlass.range_constexpr(cute.size(acc)):
+        tmp = intermediate_accum_dtype(0.0)
+        a_row = a_mn[r, None].load().to(intermediate_accum_dtype)
+        # for i in cutlass.range_constexpr(cute.size(a_row.shape)):
+        for i in cutlass.range_constexpr(cute.size(a_row.shape)):
+            tmp += a_row[i]
+        acc[r] += tmp
+
+@cute.jit
 def warp_sum_row_mma_layout(
     val: cute.TensorSSA | cute.Numeric,
     ):

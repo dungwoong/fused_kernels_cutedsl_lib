@@ -14,6 +14,13 @@ def select_and_combine_batch_dim(a: cute.Tensor, mode: list[int]) -> cute.Tensor
         a = cute.group_modes(a, 2, cute.rank(a))
     return a
 
+def transpose_view(a: cute.Tensor) -> cute.Tensor:
+    """Transpose the first two dimensions of a tensor on smem."""
+    shape = (a.shape[1], a.shape[0], *a.shape[2:])
+    order = (1, 0, *range(2, cute.rank(a)))
+    return cute.composition(a, cute.make_ordered_layout(shape, order=order))
+
+
 
 def convert_layout_acc_mn(acc_layout: cute.Layout, transpose: bool = False) -> cute.Layout:
     """

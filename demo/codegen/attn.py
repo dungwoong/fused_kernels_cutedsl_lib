@@ -3,6 +3,7 @@ import time
 from triton.testing import do_bench
 from cutedsl_kernels.experimental.attn import Kernel
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 def get_rmse(ref: torch.Tensor, o: torch.Tensor):
     assert o.dtype == ref.dtype
@@ -24,7 +25,6 @@ if __name__ == '__main__':
     k = k64.to(dtype)
     v = v64.to(dtype)
     o = torch.empty((nheads, q_len, dim), dtype=dtype, device='cuda')
-    print(q.shape)
 
     ref64 = torch.nn.functional.scaled_dot_product_attention(q64.unsqueeze(0), k64.unsqueeze(0), v64.unsqueeze(0))
     ref = torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0))
@@ -34,15 +34,19 @@ if __name__ == '__main__':
     print('Compiled kernel')
     attn_compiled(q, k, v, o)
 
+    print(o[0, ...])
+    print(ref[0, 0, ...])
+
     torch_rmse = get_rmse(ref64.squeeze(0), ref.squeeze(0).to(htype))
     my_rmse = get_rmse(ref64.squeeze(0), o.to(htype))
     print(f'{torch_rmse=}, {my_rmse=}')
 
-    # def cdsl_fn(q, k, v):
-    #     o_ = torch.empty_like(q)
-    #     attn_compiled(q, k, v, o_)
+    def cdsl_fn(q, k, v):
+        o_ = torch.empty_like(q)
+        attn_compiled(q, k, v, o_)
     
-    # my_ms = do_bench(lambda: cdsl_fn(q, k, v))
-    # time.sleep(2)
-    # torch_ms = do_bench(lambda: torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)))
-    # print(f'{my_ms=}, {torch_ms=}, {torch_ms / my_ms}')
+    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
+        my_ms = do_bench(lambda: cdsl_fn(q, k, v))
+        time.sleep(2)
+        torch_ms = do_bench(lambda: torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)))
+    print(f'{my_ms=}, {torch_ms=}, {torch_ms / my_ms}')

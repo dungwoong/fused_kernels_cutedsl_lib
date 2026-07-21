@@ -35,7 +35,8 @@ def smem_add_shared_tensor(ss, name_field, dtype, smem_layout, align):
 
 def smem_add_barrier_array(ss, name_field, stages):
     # Don't forget to multiply stages by 2
-    ss.__annotations__[name_field] = cute.struct.Align[cute.struct.MemRange[cutlass.Int64, stages], 16]
+    # ss.__annotations__[name_field] = cute.struct.Align[cute.struct.MemRange[cutlass.Int64, stages * 2], 64]
+    ss.__annotations__[name_field] = cute.struct.MemRange[cutlass.Int64, stages * 2]
 
 def smem_get_tensor(storage, field_name, layout: cute.ComposedLayout | cute.Layout):
     # sA = storage.sA.get_tensor(a_smem_layout_staged.outer, swizzle=a_smem_layout_staged.inner)
