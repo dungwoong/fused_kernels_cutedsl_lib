@@ -113,7 +113,7 @@ def rcp(acc: cute.TensorSSA) -> cute.TensorSSA:
     return new_acc.load()
 
 @cute.jit
-def copy_elemwise(acc: cute.TensorSSA) -> cute.TensorSSA:
+def copy_elementwise(acc: cute.TensorSSA) -> cute.TensorSSA:
     return acc
 
 @cute.jit

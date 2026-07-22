@@ -1,7 +1,8 @@
+import math
 import cutlass
 from cutlass import cute
 from cutlass.cutlass_dsl import Numeric, dsl_user_op, T
-from typing import Type
+from typing import Type, Callable
 from . import layout as my_layout
 from cutlass._mlir.dialects import nvvm, llvm, arith
 
@@ -55,6 +56,7 @@ def row_sum_mixed_types(a: cute.Tensor, acc: cute.Tensor, intermediate_accum_dty
             tmp += a_row[i]
         acc[r] += tmp
 
+# TODO maybe we can convert this to work with bf16
 @dsl_user_op
 def fmax(a: float | cutlass.Float32, b: float | cutlass.Float32, c: float | cutlass.Float32 | None = None, *, loc=None, ip=None) -> cutlass.Float32:
     return cutlass.Float32(
@@ -84,7 +86,7 @@ def fmax_reduce(x: cute.TensorSSA, init_val: float | cutlass.Float32 | None = No
     local_max[0] = fmax(local_max[0], local_max[1])
     local_max[2] = fmax(local_max[2], local_max[3])
     local_max[0] = fmax(local_max[0], local_max[2])
-    return local_max[0] if const_expr(init_val is None) else fmax(local_max[0], init_val)
+    return local_max[0] if cutlass.const_expr(init_val is None) else fmax(local_max[0], init_val)
 
 @cute.jit
 def row_max_f32(a: cute.Tensor, acc: cute.Tensor):
