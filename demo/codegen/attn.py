@@ -3,6 +3,9 @@ import time
 from triton.testing import do_bench
 from cutedsl_kernels.experimental.attn import Kernel as Attn
 from cutedsl_kernels.experimental.attn_full import Kernel as AttnFull
+from cutedsl_kernels.experimental.attn_full_hl import Kernel as AttnFullHL
+from cutedsl_kernels.experimental.attn_decoding import Kernel as AttnDec
+from cutedsl_kernels.experimental.attn_decoding_full import Kernel as AttnDecFull
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from contextlib import nullcontext
@@ -31,7 +34,7 @@ if __name__ == '__main__':
     ref64 = torch.nn.functional.scaled_dot_product_attention(q64.unsqueeze(0), k64.unsqueeze(0), v64.unsqueeze(0))
     ref = torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0))
 
-    attn = AttnFull()
+    attn = AttnFullHL()
     attn_compiled = compile_cutedsl((q, k, v, o), attn, False)
     print('Compiled kernel')
     attn_compiled(q, k, v, o)
