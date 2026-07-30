@@ -123,6 +123,14 @@ def exp2f(acc: cute.TensorSSA) -> cute.TensorSSA:
         new_acc[r] = cute.math.exp2(acc[r], fastmath=True)
     return new_acc.load()
 
+# TODO not tested but should be fine
+@cute.jit
+def square_elementwise(acc: cute.TensorSSA) -> cute.TensorSSA:
+    new_acc = cute.make_rmem_tensor_like(acc, acc.element_type)
+    for r in cutlass.range_constexpr(cute.size(new_acc)):
+        new_acc[r] = acc[r] * acc[r]
+    return new_acc.load()
+
 @cute.jit
 def tilewise_mul(a: cute.Tensor, b: cute.Tensor): # assume to have same layout
     new_acc = cute.make_rmem_tensor_like(a, a.element_type)
