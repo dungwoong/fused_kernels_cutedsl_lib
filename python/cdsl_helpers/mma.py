@@ -147,6 +147,31 @@ def accumulating_gemm_rs(
         wg_wait=wg_wait,
     )
 
+# TODO untested
+@cute.jit
+def single_gemm_rs(
+    tidx: int,
+    rows: int,
+    cols: int
+    tiled_mma: cute.TiledMma,
+    rA: cute.Tensor,
+    sB: cute.Tensor,
+    acc: cute.Tensor,
+    b_state: cutlass.pipeline.PipelineState | cutlass.Int32,
+    accumulate: bool,
+    wg_wait: int = 0,
+):
+    """
+    A should already be loaded and in registers, so no need to index
+    B is given the way that gemm_ss is.
+    """
+    b_idx = b_state
+    if cutlass.const_expr(isinstance(b_state, cutlass.pipeline.PipelineState)):
+        b_idx = b_state.index
+    thr_mma = tiled_mma.get_slice(tidx)
+    tSrB = tiled_mma.make_fragment_B(thr_mma.partition_B(sB))
+    return gemm_zero_init(tiled_mma, (rows, cols), rA, tSrB, A_idx=None, B_idx=b_idx, wg_wait=wg_wait)
+
 
 @cute.jit
 def accumulating_gemm_ss(
