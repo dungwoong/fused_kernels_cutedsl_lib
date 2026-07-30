@@ -23,8 +23,8 @@ if __name__ == '__main__':
     
     htype = torch.float64
     dtype = torch.bfloat16
-    q64 = torch.randn((nheads, q_len, dim), dtype=htype, device='cuda')
-    k64 = torch.randn((nheads, kv_len, dim), dtype=htype, device='cuda')
+    q64 = torch.zeros((nheads, q_len, dim), dtype=htype, device='cuda')
+    k64 = torch.ones((nheads, kv_len, dim), dtype=htype, device='cuda')
     v64 = torch.randn((nheads, kv_len, dim), dtype=htype, device='cuda')
 
     q = q64.to(dtype)
@@ -51,9 +51,9 @@ if __name__ == '__main__':
         o_ = torch.empty_like(q)
         attn_compiled(q, k, v, o_)
     
-    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
-    # with nullcontext():
-        my_ms = do_bench(lambda: cdsl_fn(q, k, v))
-        time.sleep(2)
-        torch_ms = do_bench(lambda: torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)))
-    print(f'{my_ms=}, {torch_ms=}, {torch_ms / my_ms}')
+    # with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
+    # # with nullcontext():
+    #     my_ms = do_bench(lambda: cdsl_fn(q, k, v))
+    #     time.sleep(2)
+    #     torch_ms = do_bench(lambda: torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)))
+    # print(f'{my_ms=}, {torch_ms=}, {torch_ms / my_ms}')

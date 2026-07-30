@@ -147,18 +147,35 @@ def accumulating_gemm_rs(
         wg_wait=wg_wait,
     )
 
-# TODO untested
+"""
+TODO trying the q in regs for attention does not work for some reason, e.g.
+wait(Q)
+load q to regs
+for k in ...
+    single_gemm_rs(q_regs, k)
+
+DIAGNOSIS
+- set k matrix to ones(dim=128) and q matrix to zeros
+- print result of qk every iteration, and compare to gemm_ss results
+
+The output is always the same first iter, then next iter every output is 128.
+This suggests that rQ was overwritten by ones, which would come from the K matrix.
+
+Moving rQ inside the k loop fixes things. Printing rQ outside/inside the k-loop also fixes things.
+I'm not sure why rQ gets overwritten, but that suggests that the problem may not be with my code,
+but rather the CuteDSL/PTXAS compiler?
+
+Probably not a fence or sync problem since a) results are consistent everytime, b) nonsense values are being written into rQ
+"""
 @cute.jit
 def single_gemm_rs(
     tidx: int,
     rows: int,
-    cols: int
+    cols: int,
     tiled_mma: cute.TiledMma,
     rA: cute.Tensor,
     sB: cute.Tensor,
-    acc: cute.Tensor,
     b_state: cutlass.pipeline.PipelineState | cutlass.Int32,
-    accumulate: bool,
     wg_wait: int = 0,
 ):
     """
@@ -227,4 +244,4 @@ def single_gemm_ss(
     thr_mma = tiled_mma.get_slice(tidx)
     tSrA = tiled_mma.make_fragment_A(thr_mma.partition_A(sA))
     tSrB = tiled_mma.make_fragment_B(thr_mma.partition_B(sB))
-    return gemm_zero_init(tiled_mma, (rows, cols), tSrA, tSrB, a_idx, b_idx, wg_wait=wg_wait)
+    return gemm_zero_init(tiled_mma, (rows, cols), tSrA, tSrB, A_idx=a_idx, B_idx=b_idx, wg_wait=wg_wait)
