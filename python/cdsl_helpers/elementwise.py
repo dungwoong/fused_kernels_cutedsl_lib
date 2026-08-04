@@ -145,3 +145,11 @@ def tilewise_sub(a: cute.Tensor, b: cute.Tensor): # assume to have same layout
     for r in cutlass.range_constexpr(cute.size(new_acc)):
         new_acc[r] = a[r] - b[r]
     return new_acc
+
+@cute.jit
+def tilewise_add(a: cute.Tensor, b: cute.Tensor): # assume to have same layout
+    # returns A - B
+    new_acc = cute.make_rmem_tensor_like(a, a.element_type)
+    for r in cutlass.range_constexpr(cute.size(new_acc)):
+        new_acc[r] = a[r] + b[r]
+    return new_acc
