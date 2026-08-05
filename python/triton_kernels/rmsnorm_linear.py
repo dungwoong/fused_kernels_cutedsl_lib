@@ -1,5 +1,6 @@
 import argparse
 import itertools
+import os
 
 import torch
 import triton
@@ -165,3 +166,63 @@ def rmsnorm_linear_tma_persistent(a, b, warp_specialize: bool):
         WARP_SPECIALIZE=warp_specialize,  #
     )
     return c
+
+def rmsnorm_linear_tma_persistent_dump(a, b, warp_specialize: bool, output_dir: str):
+    """
+    To dump IR, we can just hook into the wrapper function and dump IR at the end instead of running
+    the jit function
+    """
+    # Check constraints.
+    assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
+    assert a.dtype == b.dtype, "Incompatible dtypes"
+
+    M, K = a.shape
+    N, K = b.shape
+    dtype = a.dtype
+
+    c = torch.empty((M, N), device=a.device, dtype=dtype)
+
+    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+
+    # A dummy block value that will be overwritten when we have the real block size
+    dummy_block = [1, 1]
+    a_desc = TensorDescriptor.from_tensor(a, dummy_block)
+    b_desc = TensorDescriptor.from_tensor(b, dummy_block)
+    c_desc = TensorDescriptor.from_tensor(c, dummy_block)
+
+    def grid(META):
+        nonlocal a_desc, b_desc, c_desc
+        BLOCK_M = META["BLOCK_SIZE_M"]
+        BLOCK_N = META["BLOCK_SIZE_N"]
+        return (min(
+            NUM_SMS,
+            triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N),
+        ), )
+
+    compiled_kernel = matmul_kernel_tma_persistent[grid](
+        a_desc, b_desc, c_desc,  #
+        M, N, K,  #
+        FP8_OUTPUT=dtype == torch.float8_e4m3fn,  #
+        NUM_SMS=NUM_SMS,  #
+        WARP_SPECIALIZE=warp_specialize,  #
+    )
+
+    # https://github.com/triton-lang/triton/issues/2126
+    print(compiled_kernel.asm.keys())
+    os.makedirs(output_dir, exist_ok=True)
+    for ir_type, ir_content in compiled_kernel.asm.items():
+        if not ir_content:
+            continue
+        
+        # Format appropriate extension based on key
+        # (e.g., ttir, ttgir, llir, ptx, cubin)
+        file_path = os.path.join(output_dir, f"kernel.{ir_type}")
+        
+        # Binary artifacts like cubin require write-bytes mode ('wb')
+        mode = "wb" if isinstance(ir_content, (bytes, bytearray)) else "w"
+        
+        with open(file_path, mode) as f:
+            f.write(ir_content)
+        
+        print(f"Dumped {ir_type.upper()} -> {file_path}")
+    
