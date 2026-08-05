@@ -16,6 +16,7 @@ def get_rmse(ref: torch.Tensor, o: torch.Tensor):
     rmse = mse.sqrt().item()
     return rmse
 
+@torch.compile
 def torch_kernel(a: torch.Tensor, b: torch.Tensor):
     a_rms = torch.nn.functional.rms_norm(a, normalized_shape=(a.shape[1],), eps=1e-5)
     return a_rms @ b.t()
@@ -53,15 +54,10 @@ if __name__ == '__main__':
     # compiled_kernel = matmul_kernel_tma_persistent.cache
     # print(compiled_kernel[(4096, 4096, 4096, False)])
     rmsnorm_linear_tma_persistent_dump(a, b, False, output_dir="./dump")
-    
-    @torch.compile
-    def torch_fn(a, b):
-        # return torch.nn.functional.relu(a @ b.t())
-        return a @ b.t()
 
     tma_ms = do_bench(lambda: rmsnorm_linear_tma_persistent(a, b, False))
     time.sleep(2)
     tma_ws_ms = do_bench(lambda: rmsnorm_linear_tma_persistent(a, b, True))
     time.sleep(2)
-    torch_ms = do_bench(lambda: torch_fn(a, b))
+    torch_ms = do_bench(lambda: torch_kernel(a, b))
     print(f'{tma_ms=}({torch_ms / tma_ms})\n{tma_ws_ms=}({torch_ms / tma_ws_ms})\n{torch_ms=}')

@@ -17,6 +17,16 @@ def get_rmse(ref: torch.Tensor, o: torch.Tensor):
     rmse = mse.sqrt().item()
     return rmse
 
+@torch.compile
+def inductor_attention(q, k, v):
+    scale = (dim ** -0.5)
+    attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale
+    attn_probs = torch.nn.functional.softmax(attn_weights, dim=-1)
+
+    # (nheads, q_len, kv_len) x (nheads, kv_len, dim) -> (nheads, q_len, dim)
+    output = torch.matmul(attn_probs, v)
+    return output
+
 if __name__ == '__main__':
     print('Starting...')
     nheads, q_len, kv_len, dim = 32, 4096, 4096, 128
@@ -34,6 +44,7 @@ if __name__ == '__main__':
 
     ref64 = torch.nn.functional.scaled_dot_product_attention(q64.unsqueeze(0), k64.unsqueeze(0), v64.unsqueeze(0))
     ref = torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0))
+    ref_inductor = inductor_attention(q, k, v)
 
     attn = AttnFullHel()
     attn_compiled = compile_cutedsl((q, k, v, o), attn, False)
@@ -44,16 +55,20 @@ if __name__ == '__main__':
     print(ref[0, 0, ...])
 
     torch_rmse = get_rmse(ref64.squeeze(0), ref.squeeze(0).to(htype))
+    inductor_rmse = get_rmse(ref64.squeeze(0), ref_inductor.to(htype))
     my_rmse = get_rmse(ref64.squeeze(0), o.to(htype))
-    print(f'{torch_rmse=}, {my_rmse=}')
+    print(f'{torch_rmse=}, {my_rmse=}, {inductor_rmse=}')
 
     def cdsl_fn(q, k, v):
         o_ = torch.empty_like(q)
         attn_compiled(q, k, v, o_)
     
-    # with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
-    # # with nullcontext():
-    #     my_ms = do_bench(lambda: cdsl_fn(q, k, v))
-    #     time.sleep(2)
-    #     torch_ms = do_bench(lambda: torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)))
-    # print(f'{my_ms=}, {torch_ms=}, {torch_ms / my_ms}')
+    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
+    # with nullcontext():
+        my_ms = do_bench(lambda: cdsl_fn(q, k, v))
+        time.sleep(2)
+        torch_ms = do_bench(lambda: torch.nn.functional.scaled_dot_product_attention(q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)))
+        time.sleep(2)
+        inductor_ms = do_bench(lambda: inductor_attention(q, k, v))
+    print(f'{my_ms=}, {torch_ms=}, {torch_ms / my_ms}')
+    print(f'{inductor_ms=}, {torch_ms/inductor_ms=}')
