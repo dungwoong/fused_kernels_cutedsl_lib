@@ -1,0 +1,56 @@
+python3 run_eval.py --n 946 # default llama vanilla
+
+Method               Time (ms)       Speedup   
+---------------------------------------------
+Trinity              0.0607          1.00x     
+TensorRT             0.1002          1.65x     
+PyTorch Eager        0.1024          1.69x     
+Torch Inductor       0.1117          1.84x     
+FlashInfer           0.0770          1.27x     
+FlashTensor          0.0796          1.31x
+
+python3 run_eval.py --n 1562
+
+Method               Time (ms)       Speedup   
+---------------------------------------------
+Trinity              0.0606          1.00x     
+TensorRT             0.0993          1.64x     
+PyTorch Eager        0.1022          1.69x     
+Torch Inductor       0.1115          1.84x     
+FlashInfer           0.0710          1.17x     
+FlashTensor          0.0788          1.30x
+
+4430 errored
+4531 errored
+
+python3 run_eval_do_bench.py --n 946
+
+Method               Time (ms)       Speedup   
+---------------------------------------------
+Trinity              0.0701          1.00x     
+TensorRT             0.1108          1.58x     
+PyTorch Eager        0.0886          1.26x     
+Torch Inductor       0.0715          1.02x     
+FlashInfer           0.0745          1.06x     
+FlashTensor          0.0793          1.13x
+
+python3 run_eval_do_bench.py --n 1562
+
+Method               Time (ms)       Speedup   
+---------------------------------------------
+Trinity              0.0702          1.00x     
+TensorRT             0.1122          1.60x     
+PyTorch Eager        0.0898          1.28x     
+Torch Inductor       0.0726          1.03x     
+FlashInfer           0.0753          1.07x     
+FlashTensor          0.1056          1.50x
+
+
+
+Each eval will output triton code that you can run
+MOVING TO THE FUSED_KERNELS_CUTEDSL_LIB now
+
+python3 demo/trinity/vanilla_llama_benchmark1562.py 
+0.07025415778837421
+
+Same timing as before.

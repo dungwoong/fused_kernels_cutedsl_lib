@@ -90,6 +90,37 @@ if __name__ == '__main__':
             q.transpose(0, 1).unsqueeze(0), k.transpose(0, 1).unsqueeze(0), v.transpose(0, 1).unsqueeze(0)
         )
         return o.squeeze(0).transpose(0, 1)
+    
+    def e2e_compile(X, w_qkv, cache_K, cache_V):
+        qkv = torch.matmul(X, w_qkv)
+        q, k, v = torch.chunk(qkv, 3, dim=-1)
+        q = q.view(-1, H, D)
+        k = k.view(-1, H, D)
+        v = v.view(-1, H, D)
+        # print(cache_K.shape, cache_V.shape)
+        # print(k.shape, v.shape)
+        cache_K[P-M:P, :, :] = k
+        cache_V[P-M:P, :, :] = v
+        # q = q.transpose(0, 1)
+        # print(q.shape, cache_K.shape, cache_V.shape, O.shape)
+        tensors = (q, cache_K, cache_V, O, multiplier)
+        return compile_cutedsl(tensors, kernel, False)
+    
+    def e2e_cdsl(X, w_qkv, cache_K, cache_V, compiled_cdsl):
+        qkv = torch.matmul(X, w_qkv)
+        q, k, v = torch.chunk(qkv, 3, dim=-1)
+        q = q.view(-1, H, D)
+        k = k.view(-1, H, D)
+        v = v.view(-1, H, D)
+        # print(cache_K.shape, cache_V.shape)
+        # print(k.shape, v.shape)
+        cache_K[P-M:P, :, :] = k
+        cache_V[P-M:P, :, :] = v
+        # q = q.transpose(0, 1)
+        # print(q.shape, cache_K.shape, cache_V.shape, O.shape)
+        compiled_cdsl(q, cache_K, cache_V, O, multiplier)
+
+        
     o_sdpa = torch_sdpa(Q, K, V)
     print(f'{ref.stride()=}, {o_sdpa.stride()=}, {O.stride()=}')
 
@@ -119,9 +150,13 @@ if __name__ == '__main__':
             Wqkv = torch.randn((N, 3 * N), dtype=torch.bfloat16, device='cuda')
             time.sleep(2)
             matmul_ms = do_bench(lambda: X @ Wqkv)
+            time.sleep(2)
+            e2e_cdsl_kernel = e2e_compile(X, Wqkv, K, V)
+            total_ms = do_bench(lambda: e2e_cdsl(X, Wqkv, K, V, e2e_cdsl_kernel))
             print(f'{matmul_ms=}')
-            print(f'Total speedup {(matmul_ms + torch_ms)} {(matmul_ms + my_ms)}')
+            print(f'Total speedup {(matmul_ms + torch_ms)}/{(matmul_ms + my_ms)}')
             print(f'{(matmul_ms + torch_ms) / (matmul_ms + my_ms)}')
+            print(f'placeholder total ms: {total_ms=}')
             # 1024 0.01660434291032808
             # 2048 0.025651082584480626
             # 4096 0.04292608000338077
