@@ -43,7 +43,7 @@ class Kernel:
     sB_pstate = cutlass.pipeline.make_pipeline_state(cutlass.pipeline.PipelineUserType.Producer, 3)
     sB_cstate = cutlass.pipeline.make_pipeline_state(cutlass.pipeline.PipelineUserType.Consumer, 3)
     if warpidx_ >= 0 and warpidx_ < 8:
-      cute.arch.setmaxregister_increase(232)
+      cute.arch.setmaxregister_increase(224)
       # No change to min warp
       for sched_idx in cutlass.range(cute.arch.block_idx()[0], 512, 132):
         sched_coord = scheduler.remap_1d_idx(sched_idx, ((8, 32), 2), ((32, 1), 256), (32, 16), 8)
@@ -59,7 +59,7 @@ class Kernel:
           sB_pstate.advance()
         store.mma_epilogue_tma(tiled_mma_304288762019011365266476449399198678984, c_tma_tensor_1, c_tma_atom_1, acc_epi_smem, acc, 128, 256, sched_coord[0], sched_coord[1], tidx_, warpidx_, cutlass.Float32)
     if warpidx_ >= 8 and warpidx_ < 12:
-      cute.arch.setmaxregister_decrease(40)
+      cute.arch.setmaxregister_decrease(56)
       if warpidx_ == 8:
         warpidx_ = warpidx_ + 8
         tidx_ = tidx_ + 256
