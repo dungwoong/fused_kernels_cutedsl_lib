@@ -48,7 +48,7 @@ class Kernel:
       for sched_idx in cutlass.range(cute.arch.block_idx()[2], 256, 66):
         sched_coord_pre = scheduler.remap_1d_idx(sched_idx, ((8, 32), 1), ((32, 1), 256), (32, 8), 8)
         sched_coord = scheduler.add_cluster_offset_2d(sched_coord_pre, (1, 2, 1))
-        acc = mma_sm80.get_acc(tiled_mma_gemm, cutlass.Float32)
+        acc = mma_sm80.get_acc(tiled_mma_gemm, 128, 256, cutlass.Float32)
         acc.fill(0.0)
         acc_accumulate = False
         for k in cutlass.range(0, 64, 1):

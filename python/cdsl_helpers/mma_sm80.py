@@ -56,7 +56,7 @@ def copy_mma_bf16(tidx: cutlass.Int32, tiled_mma: cute.TiledMma, sX: cute.Tensor
 
 # mma.get_acc SHOULD work for sm80 mmas too, except we must fill with 0
 # accumulators.fill(0.0)
-def get_acc(tiled_mma: cute.TiledMma, dtype: Type[cutlass.Numeric]=cutlass.Float32):
+def get_acc(tiled_mma: cute.TiledMma, tile_m: int, tile_n: int, dtype: Type[cutlass.Numeric]=cutlass.Float32):
     thr_mma = tiled_mma.get_slice(0)
     acc_shape = thr_mma.partition_shape_C((tile_m, tile_n))
     acc = cute.make_rmem_tensor(acc_shape, dtype)
