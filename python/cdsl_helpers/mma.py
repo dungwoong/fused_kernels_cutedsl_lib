@@ -40,6 +40,7 @@ def copy_a_wgmma(tidx: cutlass.Int32, tiled_mma: cute.TiledMma, sA: cute.Tensor,
     Returns the copy in an mma-ready format
     
     no trans ldmatrix
+    this could work for the b tensor if it is loaded into SMEM in K-major
     """
     copy_atom_A = cute.make_copy_atom(
         cute.nvgpu.warp.LdMatrix8x8x16bOp(

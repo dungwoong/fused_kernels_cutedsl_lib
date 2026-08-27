@@ -6,6 +6,7 @@ from cutedsl_kernels.experimental.gemm_persistent_4096 import Kernel as GemmPers
 from cutedsl_kernels.experimental.gemm_high_level_generated import Kernel as GemmHL
 from cutedsl_kernels.experimental.gemm_hel import Kernel as GemmHel
 from cutedsl_kernels.experimental.gemm_hel_3072 import Kernel as Gemm3072
+from cutedsl_kernels.experimental.gemm_persistent_4096_mma import Kernel as Gemm4096Mma
 
 # Experimental autogen
 from cutedsl_kernels.experimental_autogen.gemm_c2_mnk4096_1 import Kernel as GemmC2Mnk4096_1
@@ -22,11 +23,11 @@ if __name__ == '__main__':
     parser.add_argument("m", type=int, default=4096)
     parser.add_argument("n", type=int, default=4096)
     parser.add_argument("k", type=int, default=4096)
-    parser.add_argument("--mode", type=int, choices=[0, 1, 2, 3, 4], default=0)
+    parser.add_argument("--mode", type=int, choices=[0, 1, 2, 3, 4, 5], default=0)
     args = parser.parse_args()
 
     m, n, k = args.m, args.n, args.k
-    if args.mode in (1, 2):
+    if args.mode in (1, 2, 5):
         print('Overriding shape')
         m = n = k = 4096
     if args.mode == 4:
@@ -46,6 +47,7 @@ if __name__ == '__main__':
         2: GemmC2Mnk4096_2,
         3: GemmHel,
         4: Gemm3072,
+        5: Gemm4096Mma,
     }
     GemmCls = gemm_classes[args.mode]
 
@@ -55,7 +57,7 @@ if __name__ == '__main__':
     print('Running gemm')
     compiled_gemm(a, b, c)
     print(c - ref)
-    # print(c)
+    print(c)
     # print(c)
     print('allclose:', torch.allclose(ref, c))
 
