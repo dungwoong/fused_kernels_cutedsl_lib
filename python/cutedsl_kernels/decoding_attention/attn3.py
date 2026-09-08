@@ -406,7 +406,7 @@ class KernelSplitKGMEM:
 
                 # this should be Vt Pt = (PV)t
                 rV = copy_a_wgmma_T(tidx, pv_gemm, sVt[None, None, state_v.index], self.tile_k, self.dim, self.dtype)
-                mma.accumulating_gemm_rs(tidx, pv_gemm, rV, sP, acc_o, state_v, accumulate_O, 0)
+                mma.accumulating_gemm_rs(tidx, pv_gemm, rV, sP, acc_o, 0, accumulate_O, 0)
                 accumulate_O = True
                 pipe_v.consumer_release(state_v)
                 state_k.advance()

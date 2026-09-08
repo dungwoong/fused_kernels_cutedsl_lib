@@ -1,6 +1,7 @@
 import torch
 from triton.testing import do_bench
 from cutedsl_kernels import DAttn2 as Attn
+from cutedsl_kernels import DAttn4 as Attn4
 from cdsl_helpers.cdsl_fn_utils import compile_cutedsl
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from contextlib import nullcontext

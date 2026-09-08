@@ -16,6 +16,12 @@ def torch_kernel(a: torch.Tensor, b: torch.Tensor):
     a_rms = torch.nn.functional.rms_norm(a, normalized_shape=(a.shape[1],), eps=EPS)
     return a_rms @ b.t()
 
+def torch_kernel_alt(a: torch.Tensor, b: torch.Tensor):
+    a_sq = a * a
+    mean_sq = a_sq.mean(dim=-1, keepdim=True)
+    inv_rms = torch.rsqrt(mean_sq + EPS)
+    return (a @ b.t()) * inv_rms
+
 @torch.compile
 def gemm_kernel(a: torch.Tensor, b: torch.Tensor):
     return a @ b.t()

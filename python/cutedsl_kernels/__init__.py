@@ -4,10 +4,10 @@ from .swiglu import SwigluSM90, Swiglu2SM90, Swiglu3SM90
 from .attn import AttnSM90
 from .rmsnorm_linear import RMSNormLinear1SM90, RMSNormLinear2SM90
 from .rmsnorm_swiglu import RMSNormSwiglu1
-from .decoding_attention import DAttn1, DAttn2, DAttnSplit1, AttnReduce1
+from .decoding_attention import DAttn1, DAttn2, DAttnSplit1, AttnReduce1, DAttn4
 
 __all__ = [
-    'DAttn1', 'DAttn2', 'DAttnSplit1', 'AttnReduce1',
+    'DAttn1', 'DAttn2', 'DAttnSplit1', 'AttnReduce1', 'DAttn4',
     'Gemm6SM90', 'Gemm5SM90', 'Gemm4SM90', 'Gemm3SM90', 'Gemm2SM90', 'Gemm1SM90', 
     'LoRASM90', 'SwigluSM90', 'Swiglu2SM90', 'Swiglu3SM90', 
     'AttnSM90', 'RMSNormLinear1SM90', 'RMSNormLinear2SM90', 'RMSNormSwiglu1']

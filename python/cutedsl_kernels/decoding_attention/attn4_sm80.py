@@ -5,7 +5,7 @@ import operator
 
 import cutlass
 from cutlass import cute, pipeline
-from cdsl_helpers import shared, mma, pipeline as my_pipeline, layout as my_layout, store as my_store
+from cdsl_helpers import shared, mma, pipeline as my_pipeline, layout as my_layout, store as my_store, mma_sm80
 from . import attn_scheduler, my_utils
 
 """
@@ -265,8 +265,9 @@ class Kernel:
         mO = my_layout.select(mO, [0, 2, 1])
 
         qk_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.tile_k, self.seq_q)
-        pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q, a_in_rs=True)
-        assert qk_gemm.size == pv_gemm.size
+        # pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q, a_in_rs=True)
+        pv_gemm = mma_sm80.get_tiled_mma((1, self.dim // 16, 1), self.dtype, self.acc_dtype)
+        assert qk_gemm.size == pv_gemm.size == pv_gemm2.size
         consumer_wgs = qk_gemm.size // 128
         self.nconsumer_warps = consumer_wgs * 4
 
@@ -373,15 +374,15 @@ class Kernel:
             state_k = pipeline.make_pipeline_state(pipeline.PipelineUserType.Consumer, self.stages)
             state_v = pipeline.make_pipeline_state(pipeline.PipelineUserType.Consumer, self.stages)
             
-            acc_o = mma.get_acc(pv_gemm, self.dim, self.seq_q, self.acc_dtype)
             work_tile = scheduler.initial_work_tile_info()
             if work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx
                 head_idx = tile_coord[0]
 
+                # NOTE move acc in and remove accumulate_O var
+                acc_o = mma_sm80.get_acc(pv_gemm, self.seq_q, self.dim, self.acc_dtype)
                 acc_sum = get_colsum_init_16(self.acc_dtype)
-                acc_sum.fill(0.0) # NOTE we could do is_first but this is easier
-                accumulate_O = False
+                acc_sum.fill(0.0)
                 for k in cutlass.range(k_iters, unroll=1):
                     pipe_k.consumer_wait(state_k, pipe_k.consumer_try_wait(state_k))
                     acc_p = mma.single_gemm_ss(tidx, self.tile_k, self.seq_q, qk_gemm, sK, sQ, state_k, 0)
@@ -390,10 +391,12 @@ class Kernel:
                     scale_exp(acc_p, softmax_scale_log2)
                     
                     # Do the processing, and sum potentially
-                    colsum_16(acc_p, acc_sum, is_first=False)
+                    # colsum_16(acc_p, acc_sum, is_first=False)
 
                     acc_p_16 = cute.make_fragment_like(acc_p, self.dtype)
                     acc_p_16.store(acc_p.load().to(self.dtype))
+
+                    # NOTE: you will sacrifice some precision for this but let's just test for now
                     _store_t(acc_p_16, sP[None, None, 0], qk_gemm, tidx, self.dtype)
                     cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
                     cute.arch.barrier(barrier_id=NamedBarrierFwd.WG_Sync, number_of_threads=(self.nconsumer_warps * cute.arch.WARP_SIZE))
@@ -402,8 +405,9 @@ class Kernel:
                     pipe_v.consumer_wait(state_v, pipe_v.consumer_try_wait(state_v))
 
                     # this should be Vt Pt = (PV)t
+                    mma_sm80.copy_mma_bf16(tidx, pv_gemm, sP[None, None, 0])
                     rV = copy_a_wgmma_T(tidx, pv_gemm, sVt[None, None, state_v.index], self.tile_k, self.dim, self.dtype)
-                    mma.accumulating_gemm_rs(tidx, pv_gemm, rV, sP, acc_o, 0, accumulate_O, 0)
+                    mma.accumulating_gemm_rs(tidx, pv_gemm, rV, sP, acc_o, state_v, accumulate_O, 0)
                     accumulate_O = True
                     pipe_v.consumer_release(state_v)
                     state_k.advance()
