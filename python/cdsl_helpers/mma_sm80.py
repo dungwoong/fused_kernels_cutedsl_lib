@@ -32,12 +32,12 @@ def get_tiled_mma(
     )
 
 @cute.jit
-def copy_mma_bf16(tidx: cutlass.Int32, tiled_mma: cute.TiledMma, sX: cute.Tensor, is_a: cutlass.Constexpr[bool]):
+def copy_mma_bf16(tidx: cutlass.Int32, tiled_mma: cute.TiledMma, sX: cute.Tensor, is_a: cutlass.Constexpr[bool], transpose: cutlass.Constexpr[bool]=False):
     """
     Need k major
     """
     copy_atom = cute.make_copy_atom(
-        cute.nvgpu.warp.LdMatrix8x8x16bOp(False, 4),
+        cute.nvgpu.warp.LdMatrix8x8x16bOp(transpose, 4),
         cutlass.BFloat16
     )
     tiled_copy_fn = cute.make_tiled_copy_A if cutlass.const_expr(is_a) else cute.make_tiled_copy_B

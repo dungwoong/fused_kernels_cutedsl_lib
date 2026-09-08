@@ -189,6 +189,14 @@ def _store_t(src: cute.Tensor, dst: cute.Tensor, tiled_gemm: cute.TiledMma, tidx
     cute.copy(copy_atom, r2s_r, r2s_s)
 
 @cute.jit
+def _store_n_sm80(src: cute.Tensor, dst: cute.Tensor, tiled_gemm: cute.TiledMma, tidx: int, element_type):
+    copy_atom = my_store.get_stmatrix(False, 4, element_type)
+    thr_copy_r2s = cute.make_tiled_copy_C(copy_atom, tiled_gemm).get_slice(tidx)
+    r2s_s = thr_copy_r2s.partition_D(dst)
+    r2s_r = thr_copy_r2s.retile(src)
+    cute.copy(copy_atom, r2s_r, r2s_s)
+
+@cute.jit
 def copy_a_wgmma_T(tidx: cutlass.Int32, tiled_mma: cute.TiledMma, sA: cute.Tensor, tile_m: int, tile_n: int, dtype: Type[cutlass.Numeric]):
     """
     sA should be ONLY a single stage(2D tensor)
@@ -267,7 +275,7 @@ class Kernel:
         qk_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.tile_k, self.seq_q)
         # pv_gemm = mma.get_tiled_mma(self.dtype, True, True, self.acc_dtype, self.dim, self.seq_q, a_in_rs=True)
         pv_gemm = mma_sm80.get_tiled_mma((1, self.dim // 16, 1), self.dtype, self.acc_dtype)
-        assert qk_gemm.size == pv_gemm.size == pv_gemm2.size
+        assert qk_gemm.size == pv_gemm.size
         consumer_wgs = qk_gemm.size // 128
         self.nconsumer_warps = consumer_wgs * 4
 
@@ -405,10 +413,12 @@ class Kernel:
                     pipe_v.consumer_wait(state_v, pipe_v.consumer_try_wait(state_v))
 
                     # this should be Vt Pt = (PV)t
-                    mma_sm80.copy_mma_bf16(tidx, pv_gemm, sP[None, None, 0])
-                    rV = copy_a_wgmma_T(tidx, pv_gemm, sVt[None, None, state_v.index], self.tile_k, self.dim, self.dtype)
-                    mma.accumulating_gemm_rs(tidx, pv_gemm, rV, sP, acc_o, state_v, accumulate_O, 0)
-                    accumulate_O = True
+                    rP = mma_sm80.copy_mma_bf16(tidx, pv_gemm, sP[None, None, 0], is_a=True)
+                    rV = mma_sm80.copy_mma_bf16(tidx, pv_gemm, sVt[None, None, 0], is_a=False, transpose=True)
+                    mma_sm80.gemm_0(pv_gemm, acc_o, rP, rV)
+                    # rV = copy_a_wgmma_T(tidx, pv_gemm, sVt[None, None, state_v.index], self.tile_k, self.dim, self.dtype)
+                    # mma.accumulating_gemm_rs(tidx, pv_gemm, rV, sP, acc_o, state_v, accumulate_O, 0)
+                    # accumulate_O = True
                     pipe_v.consumer_release(state_v)
                     state_k.advance()
                     state_v.advance()
@@ -420,13 +430,16 @@ class Kernel:
                 # TODO this is causing stack frame spills(32B)
                 store_partial_sums(warp_sum, sSum, self.nconsumer_warps * cute.arch.WARP_SIZE)
                 col_sum_needed = reduce_block_col_sum(sSum, self.acc_dtype)
-                col_scale(acc_o, col_sum_needed)
+                # col_scale(acc_o, col_sum_needed)
 
                 acc_o_16 = cute.make_fragment_like(acc_o, self.dtype)
                 acc_o_16.store(acc_o.load().to(self.dtype))
+                # print('acc_o_16', acc_o_16)
+                # print('sO', sO)
 
                 # seq_q, dim
-                _store_t(acc_o_16, sO[None, None, 0], pv_gemm, tidx, self.dtype)
+                # _store_t(acc_o_16, sO[None, None, 0], pv_gemm, tidx, self.dtype)
+                _store_n_sm80(acc_o_16, sO[None, None, 0], pv_gemm, tidx, self.dtype)
                 cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
                 cute.arch.barrier_arrive(barrier_id=NamedBarrierFwd.Epilogue, number_of_threads=(self.nconsumer_warps + 1) * cute.arch.WARP_SIZE)
                 # print0(sP[None, None, 0])
