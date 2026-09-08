@@ -12,6 +12,9 @@ def get_tiled_mma(
     mnk=(16, 8, 16)):
     """
     Both A and B must be k-major for this, and must be in registers.
+
+    ASSUME for now that this will stack as atom_layout, so e.g.
+    if you want WGMMA-style ordering you need (m/16, 1, 1) and it will iterate over the n dimension
     """
     op = cute.nvgpu.warp.MmaF16BF16Op(
         ab_dtype,
@@ -60,6 +63,7 @@ def get_acc(tiled_mma: cute.TiledMma, tile_m: int, tile_n: int, dtype: Type[cutl
     thr_mma = tiled_mma.get_slice(0)
     acc_shape = thr_mma.partition_shape_C((tile_m, tile_n))
     acc = cute.make_rmem_tensor(acc_shape, dtype)
+    acc.fill(0.0)
     return acc
 
 @cute.jit
