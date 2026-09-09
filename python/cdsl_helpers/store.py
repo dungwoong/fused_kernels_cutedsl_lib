@@ -49,7 +49,7 @@ def mma_epilogue_tma(
     
     epilogue_barrier = pipeline.NamedBarrier(barrier_id=int(1), num_threads=tiled_mma.size)
 
-    copy_atom_C = get_stmatrix(transposed, 4, out_dtype)
+    copy_atom_C = get_stmatrix(False, 4, out_dtype)
     tiled_copy_r2s = cute.make_tiled_copy_C_atom(copy_atom_C, tiled_mma)
 
     gC = cute.local_tile(tma_tensor, (tile_shape_m, tile_shape_n), (tile_coord_m, tile_coord_n))
