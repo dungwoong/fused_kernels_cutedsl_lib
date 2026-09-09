@@ -374,6 +374,8 @@ class Kernel:
             state_v = pipeline.make_pipeline_state(pipeline.PipelineUserType.Consumer, self.stages)
             
             acc_o = mma.get_acc(pv_gemm, self.dim, self.seq_q, self.acc_dtype)
+            print(pv_gemm)
+            print(acc_o)
             work_tile = scheduler.initial_work_tile_info()
             if work_tile.is_valid_tile:
                 tile_coord = work_tile.tile_idx

@@ -1,6 +1,7 @@
 import cutlass
 from cutlass import cute, pipeline
 from typing import Type
+from cdsl_helpers import layout
 from . import shared
 
 def get_stmatrix(transpose: bool, num_matrices: cutlass.Int32, element_type: Type[cutlass.Numeric]):
@@ -48,7 +49,7 @@ def mma_epilogue_tma(
     
     epilogue_barrier = pipeline.NamedBarrier(barrier_id=int(1), num_threads=tiled_mma.size)
 
-    copy_atom_C = get_stmatrix(False, 4, out_dtype)
+    copy_atom_C = get_stmatrix(transposed, 4, out_dtype)
     tiled_copy_r2s = cute.make_tiled_copy_C_atom(copy_atom_C, tiled_mma)
 
     gC = cute.local_tile(tma_tensor, (tile_shape_m, tile_shape_n), (tile_coord_m, tile_coord_n))
@@ -108,3 +109,39 @@ def mma_epilogue_tma(
             cute.arch.cp_async_bulk_commit_group()
             cute.arch.cp_async_bulk_wait_group(epi_stage - 1, read=True)
         epilogue_barrier.arrive_and_wait() # Don't start next stmatrix yet
+
+
+@cute.jit
+def mma_store_r2s(src: cute.Tensor, dst: cute.Tensor, tiled_gemm: cute.TiledMma, tidx: int, element_type, transpose: cutlass.Constexpr=False):
+    dst_t = layout.transpose_view(dst) if cutlass.const_expr(transpose) else dst
+    copy_atom = get_stmatrix(transpose, 4, element_type)
+    thr_copy_r2s = cute.make_tiled_copy_C(copy_atom, tiled_gemm).get_slice(tidx)
+    r2s_s = thr_copy_r2s.partition_D(dst_t)
+    r2s_r = thr_copy_r2s.retile(src)
+    cute.copy(copy_atom, r2s_r, r2s_s)
+
+
+@cute.jit
+def mma_store_single(
+    acc: cute.Tensor, stensor: cute.Tensor,
+    global_tensor: cute.Tensor, s2g_atom: cute.CopyAtom,
+    tiled_gemm: cute.TiledMma, tidx: int, warp_idx: int, 
+    dtype: Type[cutlass.Numeric], 
+    tile_coord_m: int, tile_coord_n: int,
+    s_rows: cutlass.Constexpr, s_cols: cutlass.Constexpr,
+    transpose: cutlass.Constexpr=False):
+    """
+    PRECONDITION dtype must be 16-bit
+    stensor must be [m, n, 1]
+    """
+    assert dtype.width == 16, f'Expected 16-bit type, got {dtype.width}'
+    acc_casted = cute.make_fragment_like(acc, dtype)
+    acc_casted.store(acc.load().to(dtype))
+    mma_store_r2s(acc_casted, stensor[None, None, 0], tiled_gemm, tidx, dtype, transpose)
+    cute.arch.fence_proxy(cute.arch.ProxyKind.async_shared, space=cute.arch.SharedSpace.shared_cta)
+    cute.arch.barrier_arrive(barrier_id=int(1), number_of_threads=(tiled_gemm.size + cute.arch.WARP_SIZE))
+    if warp_idx == 0:
+        cute.arch.barrier(barrier_id=int(1), number_of_threads=(tiled_gemm.size + cute.arch.WARP_SIZE))
+        tma_store_single(stensor[None, None, 0], global_tensor, s_rows, s_cols, tile_coord_m, tile_coord_n, s2g_atom)
+        cute.arch.cp_async_bulk_commit_group()
+        cute.arch.cp_async_bulk_wait_group(0, read=True)

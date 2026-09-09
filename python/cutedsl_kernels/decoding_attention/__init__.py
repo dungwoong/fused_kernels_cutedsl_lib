@@ -3,5 +3,5 @@
 # from .attempt2 import Kernel as DAttn2
 from .attn1 import Kernel as DAttn1
 from .attn2 import Kernel as DAttn2
-from .attn4_sm80 import Kernel as DAttn4
+from .attn4 import Kernel as DAttn4
 from .attn3 import KernelSplitKGMEM as DAttnSplit1, ReduceDowncastKernel as AttnReduce1

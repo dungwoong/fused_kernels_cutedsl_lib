@@ -68,7 +68,7 @@ if __name__ == '__main__':
     ref = torch_fn(Q, K, V)
     # ref = Q @ K[:, -128:, :].transpose(1, 2)
 
-    kernel = Attn(
+    kernel = Attn4(
         qk_mnk=(16, 128, 128),
         stages=2,
         p_stages=1,
