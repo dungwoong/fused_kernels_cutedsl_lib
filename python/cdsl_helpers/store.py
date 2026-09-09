@@ -133,6 +133,9 @@ def mma_store_single(
     """
     PRECONDITION dtype must be 16-bit
     stensor must be [m, n, 1]
+
+    if transposed, accumulator should be s_cols, s_rows 
+    and smem should be s_rows, s_cols
     """
     assert dtype.width == 16, f'Expected 16-bit type, got {dtype.width}'
     acc_casted = cute.make_fragment_like(acc, dtype)
