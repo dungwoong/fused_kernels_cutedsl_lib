@@ -112,6 +112,7 @@ if __name__ == '__main__':
         time.sleep(2)
         ms_gemm = do_bench(lambda: a @ bb1.t())
         print(f'{my_ms=}, {my_ms_ss=}, {other_ms=}, {other_ms_slow=}')
+        other_ms = min(other_ms, other_ms_slow)
 
         print('Using SS wgmma:')
         print(f'fast ver speedup(SS wgmma) = {other_ms / my_ms_ss}')
